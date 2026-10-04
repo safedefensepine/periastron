@@ -255,7 +255,13 @@ local library = {
         ['colorhue'] = 'https://raw.githubusercontent.com/portallol/luna/main/modules/lgbtqshit.png';
         ['colortrans'] = 'https://raw.githubusercontent.com/portallol/luna/main/modules/trans.png';
     };
-    numberStrings = {['Zero'] = 0, ['One'] = 1, ['Two'] = 2, ['Three'] = 3, ['Four'] = 4, ['Five'] = 5, ['Six'] = 6, ['Seven'] = 7, ['Eight'] = 8, ['Nine'] = 9};
+    -- keys accepted when ctrl+clicking a slider to type a number (numpad, minus and decimal point included)
+    numberStrings = {
+        ['Zero'] = 0, ['One'] = 1, ['Two'] = 2, ['Three'] = 3, ['Four'] = 4, ['Five'] = 5, ['Six'] = 6, ['Seven'] = 7, ['Eight'] = 8, ['Nine'] = 9,
+        ['KeypadZero'] = 0, ['KeypadOne'] = 1, ['KeypadTwo'] = 2, ['KeypadThree'] = 3, ['KeypadFour'] = 4,
+        ['KeypadFive'] = 5, ['KeypadSix'] = 6, ['KeypadSeven'] = 7, ['KeypadEight'] = 8, ['KeypadNine'] = 9,
+        ['Minus'] = '-', ['KeypadMinus'] = '-', ['Period'] = '.', ['KeypadPeriod'] = '.',
+    };
     signal = Signal;
     open = false;
     opening = false;
@@ -1352,6 +1358,26 @@ function library:init()
         AutoButtonColor = false;
     })
 
+    -- hidden real TextBox used by every text box option (see box:CaptureFocus).
+    -- it sits above the input blocker so clicking inside the box you're typing in moves the caret natively.
+    library.inputBox = utility:Instance('TextBox', {
+        Parent = screenGui,
+        Name = 'input',
+        Visible = true,
+        Position = UDim2.fromOffset(-10000, -10000),
+        Size = UDim2.fromOffset(200, 16),
+        BackgroundTransparency = 1,
+        TextTransparency = 1,
+        TextStrokeTransparency = 1,
+        Text = '',
+        PlaceholderText = '',
+        ClearTextOnFocus = false,
+        MultiLine = false,
+        TextEditable = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 100000,
+    })
+
     -- holding right click outside the menu temporarily locks the mouse again so you can look around
     local lookingAround = false
     local function setMouseOverUI(over)
@@ -1536,6 +1562,10 @@ function library:init()
             modalButton.Modal = true
             setMouseOverUI(false)
             setRealMouseHidden(false)
+            -- closing the menu finishes whatever you were typing
+            if library.activeBox then
+                library.activeBox:ReleaseFocus(true)
+            end
         end
 
         if bool and library.flags.disablemenumovement then
@@ -3108,15 +3138,32 @@ function library:init()
                 dropdown.draggingScroll = false
             end)
 
-            -- mouse wheel: only captured while the mouse is over an open dropdown, so camera zoom still works everywhere else
+            -- is the mouse over the open dropdown? (checks its cached screen rect directly)
+            local function mouseOverDropdown()
+                if not library.open or dropdown.selected == nil then return false end
+                local data = library.drawings[dropdown.objects.background.Object]
+                if not data or not data.AbsVisible then return false end
+                local m = inputservice:GetMouseLocation()
+                local p, s = data.AbsolutePosition, data.AbsoluteSize
+                return m.X >= p.X and m.Y >= p.Y and m.X <= p.X + s.X and m.Y <= p.Y + s.Y
+            end
+
+            -- mouse wheel scrolling. UserInputService still fires when a GUI (like the menu's input blocker)
+            -- has already processed the wheel, unlike ContextActionService, which never saw it.
+            utility:Connection(inputservice.InputChanged, function(input)
+                if input.UserInputType == Enum.UserInputType.MouseWheel and mouseOverDropdown() then
+                    local z = input.Position.Z
+                    if z ~= 0 then
+                        dropdown:Scroll(z > 0 and -1 or 1)
+                    end
+                end
+            end)
+
+            -- only sinks the wheel (so the camera doesn't zoom) while scrolling the dropdown; never scrolls by itself
             local wheelAction = 'UIDropdownScroll_'..http:GenerateGUID(false)
             pcall(function()
-                actionservice:BindActionAtPriority(wheelAction, function(_, state, input)
-                    if state ~= Enum.UserInputState.Change then
-                        return Enum.ContextActionResult.Pass
-                    end
-                    if library.open and dropdown.selected ~= nil and utility:IsInside(library.hoverData, dropdown.objects.background) then
-                        dropdown:Scroll(input.Position.Z > 0 and -1 or 1)
+                actionservice:BindActionAtPriority(wheelAction, function()
+                    if mouseOverDropdown() then
                         return Enum.ContextActionResult.Sink
                     end
                     return Enum.ContextActionResult.Pass
@@ -3428,6 +3475,16 @@ function library:init()
                     for i,v in next, data do
                         if not table.find(blacklist, i) and toggle[i] ~= nil then
                             toggle[i] = v
+                        end
+                    end
+
+                    -- accept the names other ui libs use for the starting state (default / value / toggled)
+                    if typeof(data.state) ~= 'boolean' then
+                        for _, alias in ipairs({'default', 'value', 'toggled'}) do
+                            if typeof(data[alias]) == 'boolean' then
+                                toggle.state = data[alias]
+                                break
+                            end
                         end
                     end
 
@@ -4319,7 +4376,15 @@ function library:init()
 
                     tooltip(toggle);
                     toggle:SetText(toggle.text);
-                    toggle:SetState(toggle.state, true);
+                    -- starting look is applied instantly (no color easing), so a default-on toggle
+                    -- always shows its checkmark even if another animation interrupts
+                    do
+                        local objs = toggle.objects
+                        local animated = {objs.background, objs.border1, objs.text}
+                        for _, d in ipairs(animated) do d.ColorTween = 0 end
+                        toggle:SetState(toggle.state, true);
+                        for _, d in ipairs(animated) do d.ColorTween = library.animations.color end
+                    end
                     if toggle.keybind then
                         toggle:AddKeybind(typeof(data.keybind) == 'table' and data.keybind or nil);
                     end
@@ -5239,23 +5304,10 @@ function library:init()
                             objs.border1.ThemeColor = 'Option Border 1';
                         end)
 
+                        -- click to type (ctrl + click starts with an empty box). clicking it again while typing keeps typing.
                         utility:Connection(objs.holder.MouseButton1Down, function()
-                            if box.focused then
-                                box:ReleaseFocus();
-                                actionservice:UnbindAction('FreezeMovement');
-                            else
-                                actionservice:BindAction(
-                                    'FreezeMovement',
-                                    function()
-                                        return Enum.ContextActionResult.Sink
-                                    end,
-                                    false,
-                                    unpack(Enum.PlayerActions:GetEnumItems())
-                                )
+                            if not box.focused then
                                 box:CaptureFocus(inputservice:IsKeyDown(Enum.KeyCode.LeftControl));
-                                if inputservice:IsKeyDown(Enum.KeyCode.LeftControl) then
-                                    objs.inputText.Text = '';
-                                end
                             end
                         end)
 
@@ -5269,10 +5321,48 @@ function library:init()
                         end
                     end
 
+                    -- draws `str` in the box; long text shows its end so what you're typing stays visible.
+                    -- caret (1-based like TextBox.CursorPosition) draws a | at that spot
+                    local function render(str, caret)
+                        local label = box.objects.inputText
+                        local shown = str
+                        if caret and caret >= 1 then
+                            caret = math.clamp(caret, 1, #str + 1)
+                            shown = str:sub(1, caret - 1)..'|'..str:sub(caret)
+                        end
+                        local maxWidth = box.objects.background.Object.Size.X - 6
+                        label.Text = shown
+                        if label.TextBounds.X > maxWidth then
+                            -- too long: split into whole characters (so emoji / accents never get cut in half),
+                            -- cut from the right while the caret stays visible, then from the left
+                            local chars, caretChar = {}, nil
+                            local bytePos = 1
+                            for ch in shown:gmatch(utf8.charpattern) do
+                                table.insert(chars, ch)
+                                if caret and bytePos == caret then
+                                    caretChar = #chars
+                                end
+                                bytePos += #ch
+                            end
+                            local first, last = 1, #chars
+                            local keep = caretChar or #chars
+                            local function fits()
+                                label.Text = table.concat(chars, '', first, last)
+                                return label.TextBounds.X <= maxWidth
+                            end
+                            while not fits() and last > keep do
+                                last -= 1
+                            end
+                            while not fits() and first < last do
+                                first += 1
+                            end
+                        end
+                    end
+
                     function box:SetInput(str, nocallback)
                         if typeof(str) == 'string' then
                             self.input = str;
-                            self.objects.inputText.Text = str;
+                            render(str);
                             if not nocallback then
                                 self.callback(str);
                             end
@@ -5282,93 +5372,122 @@ function library:init()
                         end
                     end
 
-                    local c
+                    -- // Typing
+                    -- a hidden real Roblox TextBox (library.inputBox) does the typing, so every character, shift,
+                    -- keyboard layouts, arrow keys, Ctrl+A / Ctrl+C / Ctrl+V and Ctrl+Backspace all work natively.
+                    -- the drawing just mirrors its text with a | caret.
+                    -- Enter or clicking away = apply, Escape = cancel.
+                    local conns = {}
                     local input = box.input;
-                    function box:CaptureFocus(clear)
-                        box.focused = true
 
-                        if clear then
-                            input = '';
-                        else
-                            input = box.input; -- stay in sync with SetInput / config loads
+                    local function disconnectAll()
+                        for _, conn in ipairs(conns) do
+                            conn:Disconnect()
                         end
-
-                        if c then
-                            c:Disconnect();
-                        end
-
-                        library.focusedBox = box; -- keybinds ignore keys while typing
-                        self.objects.inputText.ThemeColor = 'Option Text 1';
-                        c = utility:Connection(inputservice.InputBegan, function(inp)
-                            if inp.KeyCode == Enum.KeyCode.Return or inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                                box:ReleaseFocus(true);
-                            elseif inp.KeyCode == Enum.KeyCode.Escape then
-                                input = self.input
-                                self.objects.inputText.Text = input;
-                                box:ReleaseFocus();
-                            elseif inp.KeyCode == Enum.KeyCode.Backspace then
-                                input = input:sub(1,-2);
-                                self.objects.inputText.Text = input;
-                            elseif #inp.KeyCode.Name == 1 or table.find(whitelistedBoxKeys, inp.KeyCode) or inp.KeyCode.Name == 'Space' or inp.KeyCode.Name == 'Minus' or inp.KeyCode.Name == 'Equals' or inp.KeyCode.Name == 'Backquote' then
-                                local wlIdx = table.find(whitelistedBoxKeys, inp.KeyCode)
-                                local keyString = inp.KeyCode.Name == 'Space' and ' ' or inp.KeyCode.Name == 'Minus' and '_' or inp.KeyCode.Name == 'Equals' and '+' or inp.KeyCode.Name == 'Backquote' and '~' or wlIdx ~= nil and tostring(wlIdx-1) or inp.KeyCode.Name
-                                if not (inputservice:IsKeyDown(Enum.KeyCode.LeftShift) or inputservice:IsKeyDown(Enum.KeyCode.RightShift)) then
-                                    keyString = keyString:lower();
-                                    if inp.KeyCode.Name == 'Minus' then
-                                        keyString = '-'
-                                    elseif inp.KeyCode.Name == 'Equals' then
-                                        keyString = '='
-                                    elseif inp.KeyCode.Name == 'Backquote' then
-                                        keyString = '`'
-                                    end
-                                else
-                                    if keyString == '1' then
-                                        keyString = '!'
-                                    elseif keyString == '2' then
-                                        keyString = '@'
-                                    elseif keyString == '3' then
-                                        keyString = '#'
-                                    elseif keyString == '4' then
-                                        keyString = '$'
-                                    elseif keyString == '5' then
-                                        keyString = '%'
-                                    elseif keyString == '6' then
-                                        keyString = '^'
-                                    elseif keyString == '7' then
-                                        keyString = '&'
-                                    elseif keyString == '8' then
-                                        keyString = '*'
-                                    elseif keyString == '9' then
-                                        keyString = '('
-                                    elseif keyString == '0' then
-                                        keyString = ')'
-                                    end
-                                end
-                                input = input..keyString;
-                                self.objects.inputText.Text = input;
-                            end
-                        end)
-
+                        table.clear(conns)
                     end
 
-                    function box:ReleaseFocus(apply)
+                    function box:CaptureFocus(clear)
+                        local tb = library.inputBox
+                        if tb == nil then return end
+
+                        -- only one box types at a time
+                        if library.activeBox and library.activeBox ~= box then
+                            library.activeBox:ReleaseFocus(true)
+                        end
+
+                        disconnectAll()
+                        box.focused = true
+                        library.activeBox = box
+                        library.focusedBox = box -- keybinds ignore keys while typing
+                        input = clear and '' or box.input -- stay in sync with SetInput / config loads
+                        self.objects.inputText.ThemeColor = 'Option Text 1'
+
+                        -- sit the real TextBox over the drawn one (keeps IME / emoji popups in the right spot)
+                        local data = library.drawings[self.objects.background.Object]
+                        if data then
+                            tb.Position = UDim2.fromOffset(data.AbsolutePosition.X, data.AbsolutePosition.Y)
+                            tb.Size = UDim2.fromOffset(math.max(data.AbsoluteSize.X, 10), math.max(data.AbsoluteSize.Y, 10))
+                        end
+                        tb.Text = input
+
+                        local function refresh()
+                            if box.focused then
+                                render(input, tb.CursorPosition)
+                            end
+                        end
+
+                        table.insert(conns, tb:GetPropertyChangedSignal('Text'):Connect(function()
+                            if not box.focused then return end
+                            -- single line only (pasted text with newlines gets flattened)
+                            local text = tb.Text
+                            if text:find('[\r\n]') then
+                                text = text:gsub('[\r\n]+', ' ')
+                                tb.Text = text
+                                return
+                            end
+                            input = text
+                            refresh()
+                        end))
+                        table.insert(conns, tb:GetPropertyChangedSignal('CursorPosition'):Connect(refresh))
+
+                        -- Ctrl+C with nothing selected copies the whole box (the selection itself isn't drawn)
+                        table.insert(conns, inputservice.InputBegan:Connect(function(inp)
+                            if box.focused and inp.KeyCode == Enum.KeyCode.C
+                                and (inputservice:IsKeyDown(Enum.KeyCode.LeftControl) or inputservice:IsKeyDown(Enum.KeyCode.RightControl))
+                                and (tb.SelectionStart == -1 or tb.SelectionStart == tb.CursorPosition) then
+                                setclip(input)
+                            end
+                        end))
+
+                        table.insert(conns, tb.FocusLost:Connect(function(enterPressed, causedBy)
+                            if not box.focused then return end
+                            local escaped = causedBy and causedBy.KeyCode == Enum.KeyCode.Escape
+                            box:ReleaseFocus(not escaped, enterPressed)
+                        end))
+
+                        tb:CaptureFocus()
+                        task.defer(function()
+                            if box.focused then
+                                tb.CursorPosition = #tb.Text + 1
+                                refresh()
+                            end
+                        end)
+                        refresh()
+                    end
+
+                    -- apply: keep the typed text. force: fire the callback even if the text didn't change (Enter)
+                    function box:ReleaseFocus(apply, force)
+                        if not box.focused then return end
                         box.focused = false;
+                        disconnectAll()
+
                         if library.focusedBox == box then
                             library.focusedBox = nil;
                             -- remembered so the Enter/Escape that closed the box doesn't also trigger a bind
                             library.boxReleasedAt = os.clock();
                         end
+                        if library.activeBox == box then
+                            library.activeBox = nil;
+                        end
+
+                        local tb = library.inputBox
+                        if tb then
+                            pcall(function()
+                                if tb:IsFocused() then
+                                    tb:ReleaseFocus()
+                                end
+                                tb.Text = ''
+                                tb.Position = UDim2.fromOffset(-10000, -10000) -- park it so stray clicks can't focus it
+                            end)
+                        end
+
                         self.objects.inputText.ThemeColor = 'Option Text 2';
-                        if apply then
+                        if apply and (force or input ~= box.input) then
                             box:SetInput(input);
-                        end
-                        if c then
-                            c:Disconnect();
-                            c = nil;
-                        end
-                        -- the box freezes movement while typing; give it back unless the menu setting wants it frozen
-                        if not (library.open and library.flags.disablemenumovement) then
-                            actionservice:UnbindAction('FreezeMovement');
+                        else
+                            input = box.input;
+                            render(box.input);
                         end
                     end
 
