@@ -5366,7 +5366,7 @@ function library:CreateSettingsTab(menu)
 
     mainSection:AddButton({text = 'Join Discord', flag = 'joindiscord', confirm = true, callback = function()
         if not httpRequest then
-            setclip('discord.gg/seU6gab')
+            setclip('discord.gg/zPyX4BZH9q')
             library:SendNotification('Executor has no request function, invite copied instead.', 5);
             return
         end
@@ -5389,7 +5389,7 @@ function library:CreateSettingsTab(menu)
     end})
     
     mainSection:AddButton({text = 'Copy Discord', flag = 'copydiscord', callback = function()
-        setclip('discord.gg/seU6gab')
+        setclip('discord.gg/zPyX4BZH9q')
     end})
 
     mainSection:AddButton({text = 'Rejoin Server', confirm = true, callback = function()
