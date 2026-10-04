@@ -38,6 +38,19 @@ local executor = (
 -- The original lib relied on Synapse-only globals (syn.request, syn.crypt, syn.protect_gui, printconsole)
 -- which error on every other executor. These fall back gracefully.
 
+-- size + position of a slider's fill bar. ranges that cross 0 (like -50..50) fill from the 0 point
+-- towards the value, so the bar never gets a negative width (that's what made it spill past the end)
+local function sliderFill(min, max, value)
+    local range = max - min
+    if range <= 0 then
+        return UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0)
+    end
+    local zero = math.clamp((0 - min) / range, 0, 1)
+    local point = math.clamp((value - min) / range, 0, 1)
+    local left = math.min(zero, point)
+    return UDim2.new(math.abs(point - zero), 0, 1, 0), UDim2.new(left, 0, 0, 0)
+end
+
 -- snaps a value to the nearest increment (the old floor() turned 0.5 with increment 0.1 into 0.4)
 local function snapToIncrement(value, increment, min, max)
     increment = (typeof(increment) == 'number' and increment > 0) and increment or 1
@@ -163,12 +176,32 @@ do
         return conn
     end
 
+    -- handlers run in a reused coroutine (GoodSignal style) instead of a brand new thread per handler per fire.
+    -- a handler that yields simply keeps that coroutine, and a new one is made for the next handler.
+    local freeRunner = nil
+    local function acquireRunnerAndCall(fn, ...)
+        local runner = freeRunner
+        freeRunner = nil
+        fn(...)
+        freeRunner = runner
+    end
+    local function runEventHandlerInFreeThread()
+        while true do
+            acquireRunnerAndCall(coroutine.yield())
+        end
+    end
+
     function Signal:Fire(...)
+        local handlers = self._handlers
+        if #handlers == 0 then return end
         -- copy so handlers can disconnect while firing
-        local handlers = table.clone(self._handlers)
-        for _, conn in ipairs(handlers) do
+        for _, conn in ipairs(table.clone(handlers)) do
             if conn.Connected then
-                task.spawn(conn._fn, ...)
+                if not freeRunner then
+                    freeRunner = coroutine.create(runEventHandlerInFreeThread)
+                    coroutine.resume(freeRunner)
+                end
+                task.spawn(freeRunner, conn._fn, ...)
             end
         end
     end
@@ -200,6 +233,8 @@ local library = {
     utility = {};
     notifications = {};
     tweens = {};
+    activeTweens = {};
+    hitboxes = {}; -- visible-or-not Squares that can be hovered/clicked (drawing data -> true)
     theme = {};
     zindexOrder = {
         ['indicator'] = 950;
@@ -252,6 +287,7 @@ library.decorations = {
     sway = true;        -- gentle swaying while the menu is open
     growTime = .8;      -- seconds for the vines to grow in when the menu opens (0 = instant)
     density = 1;        -- leaf amount multiplier (0.5 = sparse, 2 = lush)
+    fps = 30;           -- how often the sway animation updates (lower = cheaper)
 }
 
 library.themes = {
@@ -575,12 +611,14 @@ do
             library.tweens[obj][prop] = tween;
 
             local finished = false
+            local isNumber = typeof(startVal) == 'number'
+            style = style or Enum.EasingStyle.Linear
+            direction = direction or Enum.EasingDirection.In
+
             function tween:Cancel()
                 if finished then return end
                 finished = true
-                if tween.Connection then
-                    tween.Connection:Disconnect();
-                end
+                library.activeTweens[tween] = nil
                 local completed = tween.Completed
                 if library.tweens[obj] and library.tweens[obj][prop] == tween then
                     library.tweens[obj][prop] = nil;
@@ -588,28 +626,40 @@ do
                 completed:Fire();
             end
 
-            tween.Connection = self:Connection(runservice.RenderStepped, function(dt)
+            -- called by the shared tween loop (see utility:StepTweens)
+            function tween:Step(dt)
                 if finished then return end
                 a = (time and time > 0) and (a + (dt / time)) or 1;
-                local alpha = clamp(a, 0, 1)
-                pcall(function()
-                    local progress = tweenService:GetValue(alpha, style or Enum.EasingStyle.Linear, direction or Enum.EasingDirection.In)
-                    local newVal
-                    if typeof(startVal) == 'number' then
-                        newVal = utility:Lerp(startVal, val, progress);
+                local alpha = a < 1 and a or 1
+                local progress = tweenService:GetValue(alpha, style, direction)
+                local ok = pcall(function()
+                    if isNumber then
+                        obj[prop] = startVal + (val - startVal) * progress;
                     else
-                        newVal = startVal:Lerp(val, progress);
+                        obj[prop] = startVal:Lerp(val, progress);
                     end
-                    obj[prop] = newVal;
                 end)
-                if a >= 1 or obj == nil then
+                if a >= 1 or not ok then
                     tween:Cancel();
                 end
-            end)
-            
+            end
+
+            library.activeTweens[tween] = true
             return tween;
         else
             log('unable to tween: invalid property '..tostring(prop)..' for object '..tostring(obj))
+        end
+    end
+
+    -- one RenderStepped connection drives every running tween (connected in library:init)
+    function utility:StepTweens(dt)
+        if next(library.activeTweens) == nil then return end
+        local list = {}
+        for tween in next, library.activeTweens do
+            list[#list + 1] = tween
+        end
+        for i = 1, #list do
+            list[i]:Step(dt)
         end
     end
 
@@ -634,7 +684,7 @@ do
         if v.ThemeColor and v.ThemeColor ~= '' and library.theme[v.ThemeColor] then
             local target = utility:AddRGB(library.theme[v.ThemeColor], fromrgb(offset, offset, offset))
             local running = library.tweens[v.Object] and library.tweens[v.Object].Color
-            local animate = library.animations.enabled and typeof(animTime) == 'number' and animTime > 0 and v.Object.Visible
+            local animate = library.animations.enabled and typeof(animTime) == 'number' and animTime > 0 and v.AbsVisible
 
             if animate then
                 utility:Tween(v.Object, 'Color', target, animTime, Enum.EasingDirection.Out, Enum.EasingStyle.Quad)
@@ -752,21 +802,71 @@ do
         return (mousePos.X >= x1 and mousePos.Y >= y1 and mousePos.X <= x2 and mousePos.Y <= y2)
     end
 
+    -- topmost visible Square under the mouse. uses the screen rects cached in drawing:Update,
+    -- so it never has to read properties back from the Drawing objects
     function utility:GetHoverObject()
-        local objects = {}
-        for i,v in next, library.drawings do
-            if v.Object.Visible and v.Class == 'Square' and not v.NoHit and self:MouseOver(v.Object) then
-                table.insert(objects,v.Object)
+        local mouse = inputservice:GetMouseLocation()
+        local mx, my = mouse.X, mouse.Y
+        local best, bestZ = nil, -math.huge
+        for v in next, library.hitboxes do
+            if v.AbsVisible and not v.NoHit then
+                local p, s = v.AbsolutePosition, v.AbsoluteSize
+                if mx >= p.X and my >= p.Y and mx <= p.X + s.X and my <= p.Y + s.Y then
+                    local zi = v.ZIndexCache or 0
+                    if zi > bestZ then
+                        best, bestZ = v.Object, zi
+                    end
+                end
             end
         end
-        table.sort(objects,function(a,b)
-            return a.ZIndex > b.ZIndex
-        end)
-        return objects[1]
+        return best
+    end
+
+    -- maps the mouse X over a slider's bar to a value (uses the cached rect, no Drawing reads)
+    function utility:SliderDragTo(slider, mousePos)
+        local bar = slider.objects and slider.objects.background
+        local data = bar and bar.Object and library.drawings[bar.Object]
+        if not data then return end
+        local width = math.max(data.AbsoluteSize.X, 1)
+        local rel = clamp((mousePos.X - data.AbsolutePosition.X) / width, 0, 1)
+        local value = slider.min + (slider.max - slider.min) * rel
+        -- only update (and fire the callback) when the snapped value actually changes
+        if snapToIncrement(value, slider.increment, slider.min, slider.max) ~= slider.value then
+            slider:SetValue(value)
+        end
+    end
+
+    -- is drawing data `data` the drawing `root` (a proxy) or somewhere inside it?
+    function utility:IsInside(data, root)
+        if data == nil or root == nil or root.Object == nil then return false end
+        local target = root.Object
+        local cur = data
+        while cur do
+            if cur.Object == target then
+                return true
+            end
+            cur = cur.Parent and library.drawings[cur.Parent.Object] or nil
+        end
+        return false
+    end
+
+    local blacklistedLookup = {Object = true, Children = true, Class = true}
+    -- keys that only exist on the wrapper table (writing them to a Drawing just throws an error)
+    local customKeys = {
+        ThemeColor = true, OutlineThemeColor = true, ThemeColorOffset = true, OutlineThemeColorOffset = true,
+        Parent = true, Hover = true, ColorTween = true, Ready = true, NoHit = true,
+        Visible = true, -- resolved against the parent's visibility in Update()
+        AbsoluteSize = true, AbsolutePosition = true, AbsVisible = true,
+    }
+    local themeKeys = {ThemeColor = true, OutlineThemeColor = true, ThemeColorOffset = true, OutlineThemeColorOffset = true}
+    local function setRaw(obj, key, value)
+        obj[key] = value
+    end
+    local function getRaw(obj, key)
+        return obj[key]
     end
 
     function utility:Draw(class, properties)
-        local blacklistedProperties = {'Object','Children','Class'}
         local drawing = {
             Object = Drawing.new(class);
             Children = {};
@@ -793,27 +893,57 @@ do
             Class = class;
         }
 
+        local hasSize = class == 'Square' or class == 'Image'
+        local hasPosition = hasSize or class == 'Circle' or class == 'Text'
+
+        -- recomputes the screen rect from the parent's cached rect and only writes to the
+        -- Drawing object when something actually changed (writes are the expensive part)
         function drawing:Update()
-            -- if drawing.Parent then
-                local parent = drawing.Parent ~= nil and library.drawings[drawing.Parent.Object] or nil
-                local parentSize,parentPos,parentVis = workspace.CurrentCamera.ViewportSize, Vector2.new(0,0), true;
-                if parent ~= nil then
-                    parentSize = (parent.Class == 'Square' or parent.Class == 'Image') and parent.Object.Size or parent.Class == 'Text' and parent.TextBounds or workspace.CurrentCamera.ViewportSize
-                    parentPos = parent.Object.Position
-                    parentVis = parent.Object.Visible
+            local obj = drawing.Object
+            if obj == nil then return end
+
+            local parent = drawing.Parent ~= nil and library.drawings[drawing.Parent.Object] or nil
+            local parentSize, parentPos, parentVis
+            if parent ~= nil then
+                parentPos = parent.AbsolutePosition
+                parentVis = parent.AbsVisible
+                if parent.Class == 'Square' or parent.Class == 'Image' then
+                    parentSize = parent.AbsoluteSize
+                elseif parent.Class == 'Text' then
+                    parentSize = parent.Object.TextBounds
+                else
+                    parentSize = workspace.CurrentCamera.ViewportSize
                 end
+            else
+                parentSize, parentPos, parentVis = workspace.CurrentCamera.ViewportSize, newVector2(0, 0), true
+            end
 
-                if drawing.Class == 'Square' or drawing.Class == 'Image' then
-                    drawing.Object.Size = typeof(drawing.Size) == 'Vector2' and drawing.Size or typeof(drawing.Size) == 'UDim2' and utility:UDim2ToVector2(drawing.Size,parentSize)
+            if hasSize then
+                local size = drawing.Size
+                local abs = typeof(size) == 'Vector2' and size or utility:UDim2ToVector2(size, parentSize)
+                if abs ~= drawing.AbsoluteSize or not drawing.SizeWritten then
+                    drawing.AbsoluteSize = abs
+                    drawing.SizeWritten = true
+                    obj.Size = abs
                 end
+            end
 
-                if drawing.Class == 'Square' or drawing.Class == 'Image' or drawing.Class == 'Circle' or drawing.Class == 'Text' then
-                    drawing.Object.Position = parentPos + (typeof(drawing.Position) == 'Vector2' and drawing.Position or utility:UDim2ToVector2(drawing.Position,parentSize))
+            if hasPosition then
+                local pos = drawing.Position
+                local abs = parentPos + (typeof(pos) == 'Vector2' and pos or utility:UDim2ToVector2(pos, parentSize))
+                if abs ~= drawing.AbsolutePosition or not drawing.PositionWritten then
+                    drawing.AbsolutePosition = abs
+                    drawing.PositionWritten = true
+                    obj.Position = abs
                 end
+            end
 
-                drawing.Object.Visible = (parentVis and drawing.Visible) and true or false
+            local visible = (parentVis and drawing.Visible) and true or false
+            if visible ~= drawing.AbsVisible then
+                drawing.AbsVisible = visible
+                obj.Visible = visible
+            end
 
-            -- end
             drawing:UpdateChildren()
         end
 
@@ -836,6 +966,9 @@ do
         end
 
         library.drawings[drawing.Object] = drawing
+        if class == 'Square' then
+            library.hitboxes[drawing] = true
+        end
 
         -- this is really stupid lol
         local proxy = utility:DetectTableChange(
@@ -846,9 +979,7 @@ do
             if drawing.Object == nil then
                 return nil -- drawing was removed
             end
-            local ok, res = pcall(function()
-                return drawing.Object[i]
-            end)
+            local ok, res = pcall(getRaw, drawing.Object, i)
             if ok then
                 return res
             end
@@ -858,17 +989,24 @@ do
             if drawing.Object == nil then
                 return -- drawing was removed
             end
-            if not table.find(blacklistedProperties,i) then
+            if not blacklistedLookup[i] then
 
                 local lastval = drawing[i]
 
-                if i == 'Size' and (class == 'Square' or class == 'Image') then
-                    drawing.Object.Size = utility:UDim2ToVector2(v,drawing.Parent == nil and workspace.CurrentCamera.ViewportSize or drawing.Parent.Object.Size);
-                    drawing.AbsoluteSize = drawing.Object.Size;
-                elseif i == 'Position' and (class == 'Square' or class == 'Image' or class == 'Text') then
-                    drawing.Object.Position =  utility:UDim2ToVector2(v,drawing.Parent == nil and newVector2(0,0) or drawing.Parent.Object.Position);
-                    drawing.AbsolutePosition = drawing.Object.Position;
-                elseif i == 'Parent' then
+                -- layout props are resolved by Update(), never written raw
+                if (i == 'Size' and hasSize) or (i == 'Position' and hasPosition) then
+                    if lastval ~= v then
+                        drawing[i] = v
+                        drawing:Update()
+                    end
+                    return
+                end
+
+                if i == 'ZIndex' then
+                    drawing.ZIndexCache = v
+                end
+
+                if i == 'Parent' then
                     -- Children is an array, so remove by index (the old code did Children[drawing] = nil which never removed anything)
                     if drawing.Parent ~= nil then
                         local siblings = drawing.Parent.Children
@@ -892,17 +1030,18 @@ do
                     v = 1
                 end
 
-                pcall(function()
-                    drawing.Object[i] = v
-                end)
+                -- custom keys only live on the wrapper; everything else goes to the Drawing object
+                if not customKeys[i] then
+                    pcall(setRaw, drawing.Object, i, v)
+                end
                 if drawing[i] ~= nil or i == 'Parent' then
                     drawing[i] = v
                 end
 
-                if table.find({'Size','Position','Visible','Parent'},i) then
+                if i == 'Visible' or i == 'Parent' then
                     drawing:Update()
                 end
-                if table.find({'ThemeColor','OutlineThemeColor','ThemeColorOffset','OutlineThemeColorOffset'},i) and lastval ~= v then
+                if themeKeys[i] and lastval ~= v then
                     -- only recolor this drawing instead of every drawing in the library (eased once it exists)
                     utility:ApplyThemeColor(drawing, drawing.Ready and drawing.ColorTween or 0)
                 end
@@ -929,6 +1068,10 @@ do
             end
 
             library.drawings[drawing.Object] = nil;
+            library.hitboxes[drawing] = nil;
+            if library.hoverData == drawing then
+                library.hoverData = nil;
+            end
             pcall(function()
                 drawing.Object:Remove();
             end)
@@ -1221,12 +1364,19 @@ function library:init()
         screenGui:Destroy()
     end)
 
+    local lastCursorPos = nil
     utility:Connection(runservice.RenderStepped, function()
         if self.open then
-            updateCursor()
+            local pos = inputservice:GetMouseLocation()
+            if pos ~= lastCursorPos then
+                lastCursorPos = pos
+                updateCursor()
+            end
             if inputservice.MouseIconEnabled then
                 setRealMouseHidden(true)
             end
+        else
+            lastCursorPos = nil
         end
     end)
 
@@ -1269,9 +1419,7 @@ function library:init()
 
                     -- // Update Sliders Click
                     if library.draggingSlider ~= nil then
-                        local rel = inputservice:GetMouseLocation() - library.draggingSlider.objects.background.Object.Position;
-                        local val = utility:ConvertNumberRange(rel.X, 0 , library.draggingSlider.objects.background.Object.Size.X, library.draggingSlider.min, library.draggingSlider.max);
-                        library.draggingSlider:SetValue(val)
+                        utility:SliderDragTo(library.draggingSlider, inputservice:GetMouseLocation())
                     end
 
                 elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
@@ -1311,44 +1459,64 @@ function library:init()
         end
     end)
 
-    utility:Connection(inputservice.InputChanged, function(input, gpe)
-        if input.UserInputType == Enum.UserInputType.MouseMovement then
-            if library.open then
-                mousemove:Fire(inputservice:GetMouseLocation());
-                updateCursor();
+    -- // Mouse movement
+    -- processed once per frame (instead of once per input event) and only when the mouse actually moved.
+    -- hover only fires enter/leave on the previous and new hovered object instead of looping every drawing.
+    local function setHover(data, mousePos)
+        local previous = library.hoverData
+        if previous == data then return end
+        library.hoverData = data
+        if previous and previous.Object then
+            previous.Hover = false
+            previous.MouseLeave:Fire(mousePos)
+        end
+        if data then
+            data.Hover = true
+            data.MouseEnter:Fire(mousePos)
+        end
+    end
 
-                if library.CurrentTooltip ~= nil then
-                    local mousePos = inputservice:GetMouseLocation()
-                    tooltipObjects.background.Position = UDim2.new(0,mousePos.X + 15,0,mousePos.Y + 15)
-                    tooltipObjects.background.Size = UDim2.new(0,tooltipObjects.text.TextBounds.X + 6 + (library.CurrentTooltip.risky and 60 or 0),0,tooltipObjects.text.TextBounds.Y + 2)
-                end
+    local lastMouse = nil
+    local function processMouse()
+        if not library.open then
+            if library.hoverData then
+                setHover(nil, inputservice:GetMouseLocation())
+            end
+            lastMouse = nil
+            return
+        end
 
-                local hoverObj = utility:GetHoverObject();
-                -- keep blocking while dragging something that started on the menu (sliders, window drag)
-                setMouseOverUI(hoverObj ~= nil or (mb1down and library.pressStartedOverUI == true))
-                for _,v in next, library.drawings do
-                    local hover = hoverObj == v.Object;
-                    if hover and not v.Hover then
-                        v.Hover = true;
-                        v.MouseEnter:Fire(inputservice:GetMouseLocation());
-                    elseif not hover and v.Hover then
-                        v.Hover = false;
-                        v.MouseLeave:Fire(inputservice:GetMouseLocation());
-                    end
-                end
+        local mousePos = inputservice:GetMouseLocation()
+        if mousePos == lastMouse and not library.hoverDirty then
+            return
+        end
+        local moved = mousePos ~= lastMouse
+        lastMouse = mousePos
+        library.hoverDirty = false
 
-                if mb1down then
+        if moved then
+            mousemove:Fire(mousePos);
 
-                    -- // Update Sliders Drag
-                    if library.draggingSlider ~= nil then
-                        local rel = inputservice:GetMouseLocation() - library.draggingSlider.objects.background.Object.Position;
-                        local val = utility:ConvertNumberRange(rel.X, 0 , library.draggingSlider.objects.background.Object.Size.X, library.draggingSlider.min, library.draggingSlider.max);
-                        library.draggingSlider:SetValue(val)
-                    end
-
-                end
+            if library.CurrentTooltip ~= nil then
+                tooltipObjects.background.Position = UDim2.new(0,mousePos.X + 15,0,mousePos.Y + 15)
+                tooltipObjects.background.Size = UDim2.new(0,tooltipObjects.text.TextBounds.X + 6 + (library.CurrentTooltip.risky and 60 or 0),0,tooltipObjects.text.TextBounds.Y + 2)
             end
         end
+
+        local hoverObj = utility:GetHoverObject();
+        -- keep blocking while dragging something that started on the menu (sliders, window drag)
+        setMouseOverUI(hoverObj ~= nil or (mb1down and library.pressStartedOverUI == true))
+        setHover(hoverObj and library.drawings[hoverObj] or nil, mousePos)
+
+        -- // Update Sliders Drag
+        if moved and mb1down and library.draggingSlider ~= nil then
+            utility:SliderDragTo(library.draggingSlider, mousePos)
+        end
+    end
+
+    utility:Connection(runservice.RenderStepped, function(dt)
+        utility:StepTweens(dt)
+        processMouse()
     end)
     
     function self:SetOpen(bool)
@@ -1855,7 +2023,7 @@ function library:init()
                 objects = {
                     values = {};
                 };
-                max = 5;
+                max = data.maxDropdownItems or 8; -- rows visible before the list scrolls
             }
         };
 
@@ -2278,8 +2446,27 @@ function library:init()
                 end
             end
 
+            -- the vines only need ~30 updates a second (sway is slow), and none at all while
+            -- the menu is closed or nothing about them changes
+            local lastDecoUpdate, lastFramePos, lastFrameSize, lastSettingsKey = 0, nil, nil, nil
             utility:Connection(runservice.RenderStepped, function()
                 if broken then return end
+                local frameData = frame.Object and library.drawings[frame.Object]
+                if not frameData then return end
+                local now = os.clock()
+                local moved = frameData.AbsolutePosition ~= lastFramePos or frameData.AbsoluteSize ~= lastFrameSize
+                local growTime = tonumber(deco.growTime) or 0
+                local growing = window.open and growTime > 0 and (now - openedAt) < growTime + .1
+                local animating = window.open and deco.enabled and deco.vines and (deco.sway or growing)
+                local interval = 1 / math.max(tonumber(deco.fps) or 30, 1)
+                local settingsKey = tostring(deco.enabled)..tostring(deco.vines)..tostring(deco.shadow)..tostring(deco.palette)..tostring(deco.sway)
+                local changed = moved or wasOpen ~= window.open or settingsKey ~= lastSettingsKey
+                if not changed and not (animating and now - lastDecoUpdate >= interval) then
+                    return
+                end
+                lastSettingsKey = settingsKey
+                lastDecoUpdate = now
+                lastFramePos, lastFrameSize = frameData.AbsolutePosition, frameData.AbsoluteSize
                 local ok, err = pcall(updateDecorations)
                 if not ok then
                     broken = true
@@ -2703,97 +2890,265 @@ function library:init()
 
             end
 
-            function window.dropdown:Refresh()
-                if self.selected ~= nil then
-                    local list = self.selected
-                    for idx, value in next, list.values do
-                        local valueObject = self.objects.values[idx]
-                        if valueObject == nil then
-                            valueObject = {};
-                            valueObject.background = utility:Draw('Square', {
-                                Size = newUDim2(1,-4,0,18);
-                                Color = Color3.new(.25,.25,.25);
-                                Transparency = 0;
-                                ZIndex = library.zindexOrder.dropdown+1;
-                                Parent = self.objects.background;
-                            })
-                            valueObject.text = utility:Draw('Text', {
-                                Position = newUDim2(0,3,0,1);
-                                ThemeColor = 'Option Text 2';
-                                Text = tostring(value);
-                                Size = 13;
-                                Font = 2;
-                                ZIndex = library.zindexOrder.dropdown+2;
-                                Parent = valueObject.background;
-                            })
-                            valueObject.connection = utility:Connection(valueObject.background.MouseButton1Down, function()
-                                local currentList = self.selected
-                                if currentList then
-                                    local val = currentList.values[idx]
-                                    local currentSelected = currentList.selected;
-                                    local newSelected = currentList.multi and {} or val;
-                                    
-                                    if currentList.multi then
-                                        for i,v in next, currentSelected do
-                                            if v == "none" then continue end
-                                            newSelected[i] = v;
-                                        end
-                                        if table.find(newSelected, val) then
-                                            table.remove(newSelected, table.find(newSelected, val));
-                                        else
-                                            table.insert(newSelected, val)
-                                        end
-                                    end
+            -- // Scrollable list
+            -- only `max` rows exist (a small reused pool); scrolling just changes which values they show.
+            -- scroll with the mouse wheel, or drag the scrollbar on the right.
+            local dropdown = window.dropdown
+            local ROW, PAD = 18, 2
+            local z = library.zindexOrder.dropdown
+            dropdown.scroll = 0
 
-                                    currentList:Select(newSelected);
-                                    if not currentList.multi then
-                                        currentList.open = false;
-                                        currentList.objects.openText.Text = '+';
-                                        window.dropdown.selected = nil;
-                                        window.dropdown.objects.background.Visible = false;
-                                    end
+            dropdown.objects.scrollTrack = utility:Draw('Square', {
+                Size = newUDim2(0,4,1,-4);
+                Position = newUDim2(1,-7,0,2);
+                ThemeColor = 'Option Background';
+                ZIndex = z+3;
+                Visible = false;
+                Parent = dropdown.objects.background;
+            })
 
-                                    for idx, val in next, currentList.values do
-                                        local valueObj = self.objects.values[idx]
-                                        if valueObj then
-                                            valueObj.background.Transparency = (typeof(newSelected) == 'table' and table.find(newSelected, val) or newSelected == val) and 1 or 0
-                                        end
-                                    end
+            dropdown.objects.scrollThumb = utility:Draw('Square', {
+                Size = newUDim2(1,0,0,10);
+                ThemeColor = 'Accent';
+                ZIndex = z+4;
+                Parent = dropdown.objects.scrollTrack;
+            })
 
-                                end
-                            end)
-                            self.objects.values[idx] = valueObject
-                        end
-                    end
+            local function isSelected(list, val)
+                if typeof(list.selected) == 'table' then
+                    return table.find(list.selected, val) ~= nil
+                end
+                return list.selected == val
+            end
 
-                    for idx, val in next, list.values do
-                        local valueObj = self.objects.values[idx]
-                        if valueObj then
-                            valueObj.background.Transparency = (typeof(list.selected) == 'table' and table.find(list.selected, val) or list.selected == val) and 1 or 0
-                        end
-                    end
+            function dropdown:GetMax()
+                local list = self.selected
+                return math.max(1, floor((list and list.maxVisible) or self.max or 8))
+            end
 
-                    local y,padding = 2,2
-                    for idx, obj in next, self.objects.values do
-                        local valueStr = list.values[idx]
-                        obj.background.Visible = valueStr ~= nil
-                        if valueStr ~= nil then
-                            obj.background.Position = newUDim2(0,2,0,y);
-                            obj.text.Text = valueStr;
-                            y = y + obj.background.Object.Size.Y + padding;
-                        end
-                    end
+            function dropdown:ClampScroll()
+                local list = self.selected
+                local count = list and #list.values or 0
+                self.scroll = clamp(floor(self.scroll or 0), 0, math.max(count - self:GetMax(), 0))
+            end
 
-                    self.objects.background.Size = newUDim2(1,-6,0,y);    
-
+            function dropdown:Scroll(delta)
+                local before = self.scroll
+                self.scroll = (self.scroll or 0) + delta
+                self:ClampScroll()
+                if self.scroll ~= before then
+                    self:Refresh()
                 end
             end
-        
-            window.dropdown:Refresh();
 
-            -- drops down a few pixels while fading in
+            -- scrolls so the selected value sits in the middle of the list
+            function dropdown:ScrollToSelected()
+                local list = self.selected
+                if not list then return end
+                local target = typeof(list.selected) == 'table' and list.selected[1] or list.selected
+                local idx = table.find(list.values, target)
+                self.scroll = idx and (idx - math.ceil(self:GetMax() / 2)) or 0
+                self:ClampScroll()
+            end
+
+            function dropdown:Close()
+                local list = self.selected
+                if list then
+                    list.open = false
+                    list.objects.openText.Text = '+'
+                end
+                self.selected = nil
+                self.draggingScroll = false
+                self.objects.background.Visible = false
+            end
+
+            function dropdown:GetRow(slot)
+                local row = self.objects.values[slot]
+                if row then return row end
+
+                row = {}
+                row.background = utility:Draw('Square', {
+                    Size = newUDim2(1,-4,0,ROW);
+                    Color = Color3.new(.25,.25,.25);
+                    Transparency = 0;
+                    ZIndex = z+1;
+                    Parent = self.objects.background;
+                })
+                row.text = utility:Draw('Text', {
+                    Position = newUDim2(0,3,0,1);
+                    ThemeColor = 'Option Text 2';
+                    Size = 13;
+                    Font = 2;
+                    ZIndex = z+2;
+                    Parent = row.background;
+                })
+
+                utility:Connection(row.background.MouseEnter, function()
+                    local list = self.selected
+                    if list and row.value ~= nil and not isSelected(list, row.value) then
+                        row.text.ThemeColor = 'Accent'
+                    end
+                end)
+
+                utility:Connection(row.background.MouseLeave, function()
+                    local list = self.selected
+                    row.text.ThemeColor = (list and row.value ~= nil and isSelected(list, row.value)) and 'Option Text 1' or 'Option Text 2'
+                end)
+
+                utility:Connection(row.background.MouseButton1Down, function()
+                    local list = self.selected
+                    if not list then return end
+                    local val = list.values[(self.scroll or 0) + slot]
+                    if val == nil then return end
+
+                    local newSelected = list.multi and {} or val
+                    if list.multi then
+                        for _, v in next, (typeof(list.selected) == 'table' and list.selected or {}) do
+                            if v ~= 'none' then
+                                table.insert(newSelected, v)
+                            end
+                        end
+                        local found = table.find(newSelected, val)
+                        if found then
+                            table.remove(newSelected, found)
+                        else
+                            table.insert(newSelected, val)
+                        end
+                    end
+
+                    list:Select(newSelected)
+                    if list.multi then
+                        self:Refresh()
+                    else
+                        self:Close()
+                    end
+                end)
+
+                self.objects.values[slot] = row
+                return row
+            end
+
+            function dropdown:Refresh()
+                local list = self.selected
+                if list == nil then return end
+                self:ClampScroll()
+
+                local max = self:GetMax()
+                local count = #list.values
+                local shown = math.min(count, max)
+                local scrollable = count > max
+                local rowWidth = scrollable and -12 or -4
+
+                for slot = 1, math.max(shown, #self.objects.values) do
+                    local val = slot <= shown and list.values[self.scroll + slot] or nil
+                    local row = val ~= nil and self:GetRow(slot) or self.objects.values[slot]
+                    if row then
+                        row.value = val
+                        row.background.Visible = val ~= nil
+                        if val ~= nil then
+                            local selected = isSelected(list, val)
+                            row.background.Position = newUDim2(0,2,0,2 + (slot - 1) * (ROW + PAD))
+                            row.background.Size = newUDim2(1,rowWidth,0,ROW)
+                            row.background.Transparency = selected and 1 or 0
+                            row.text.Text = tostring(val)
+                            row.text.ThemeColor = selected and 'Option Text 1' or (row.background.Hover and 'Accent' or 'Option Text 2')
+                        end
+                    end
+                end
+
+                local height = math.max(2 + shown * (ROW + PAD), 4)
+                self.objects.background.Size = newUDim2(1,-6,0,height)
+
+                local track, thumb = self.objects.scrollTrack, self.objects.scrollThumb
+                track.Visible = scrollable
+                if scrollable then
+                    local trackHeight = height - 4
+                    local thumbHeight = math.max(floor(trackHeight * max / count), 12)
+                    local y = floor((trackHeight - thumbHeight) * (self.scroll / (count - max)))
+                    thumb.Size = newUDim2(1,0,0,thumbHeight)
+                    thumb.Position = newUDim2(0,0,0,y)
+                end
+
+                library.hoverDirty = true
+            end
+
+            -- scrollbar dragging: thumb follows the mouse
+            local function scrollToMouse(pos)
+                local list = dropdown.selected
+                if not list then return end
+                local trackData = library.drawings[dropdown.objects.scrollTrack.Object]
+                local thumbData = library.drawings[dropdown.objects.scrollThumb.Object]
+                if not trackData or not thumbData then return end
+                local trackHeight = trackData.AbsoluteSize.Y
+                local thumbHeight = thumbData.AbsoluteSize.Y
+                local maxScroll = #list.values - dropdown:GetMax()
+                if maxScroll <= 0 or trackHeight <= thumbHeight then return end
+                local rel = clamp((pos.Y - trackData.AbsolutePosition.Y - thumbHeight / 2) / (trackHeight - thumbHeight), 0, 1)
+                local target = floor(rel * maxScroll + .5)
+                if target ~= dropdown.scroll then
+                    dropdown.scroll = target
+                    dropdown:Refresh()
+                end
+            end
+
+            for _, handle in ipairs({dropdown.objects.scrollTrack, dropdown.objects.scrollThumb}) do
+                utility:Connection(handle.MouseButton1Down, function(pos)
+                    dropdown.draggingScroll = true
+                    scrollToMouse(pos)
+                end)
+            end
+
+            utility:Connection(mousemove, function(pos)
+                if dropdown.draggingScroll then
+                    scrollToMouse(pos)
+                end
+            end)
+
+            utility:Connection(button1up, function()
+                dropdown.draggingScroll = false
+            end)
+
+            -- mouse wheel: only captured while the mouse is over an open dropdown, so camera zoom still works everywhere else
+            local wheelAction = 'UIDropdownScroll_'..http:GenerateGUID(false)
+            pcall(function()
+                actionservice:BindActionAtPriority(wheelAction, function(_, state, input)
+                    if state ~= Enum.UserInputState.Change then
+                        return Enum.ContextActionResult.Pass
+                    end
+                    if library.open and dropdown.selected ~= nil and utility:IsInside(library.hoverData, dropdown.objects.background) then
+                        dropdown:Scroll(input.Position.Z > 0 and -1 or 1)
+                        return Enum.ContextActionResult.Sink
+                    end
+                    return Enum.ContextActionResult.Pass
+                end, false, Enum.ContextActionPriority.High.Value + 100, Enum.UserInputType.MouseWheel)
+            end)
+            utility:Connection(library.unloaded, function()
+                pcall(function()
+                    actionservice:UnbindAction(wheelAction)
+                end)
+            end)
+
+            -- clicking anywhere outside an open dropdown / color picker closes it
+            utility:Connection(button1down, function()
+                local hoverObj = utility:GetHoverObject()
+                local hoverData = hoverObj and library.drawings[hoverObj] or nil
+                local list = dropdown.selected
+                if list and not utility:IsInside(hoverData, list.objects.holder) then
+                    dropdown:Close()
+                end
+                local color = window.colorpicker.selected
+                if color and not utility:IsInside(hoverData, color.objects.holder) then
+                    color:SetOpen(false)
+                end
+            end)
+
+            dropdown:Refresh();
+
+            -- drops down a few pixels while fading in (and jumps to the selected value)
             function window.dropdown:AnimateOpen()
                 local anim = library.animations
+                self:ScrollToSelected()
+                self:Refresh()
                 utility:SlideIn(self.objects.background, newUDim2(0,3,1,0), newUDim2(0,0,0,-anim.popupOffset), anim.popup)
                 utility:FadeIn(self.objects.background, anim.popup)
             end
@@ -3729,10 +4084,10 @@ function library:init()
                                 local size, pos = self.objects.slider.Size, self.objects.slider.Position;
     
                                 if self.min >= 0 then
-                                    size = newUDim2((newValue - self.min) / (self.max - self.min), 0, 1, 0);
+                                    size, pos = sliderFill(self.min, self.max, newValue);
                                 else
-                                    size = newUDim2(newValue / (self.max - self.min), 0, 1, 0);
-                                    pos = newUDim2((0 - self.min) / (self.max - self.min), 0, 0, 0);
+                                    size, pos = sliderFill(self.min, self.max, newValue);
+                                    -- negative ranges fill outwards from 0 (handled in sliderFill)
                                 end
     
                                 utility:Tween(self.objects.slider, 'Size', size, .05, Enum.EasingDirection.Out, Enum.EasingStyle.Quad);
@@ -3769,6 +4124,7 @@ function library:init()
                             callback = function() end;
                             enabled = true;
                             multi = false;
+                            maxVisible = false; -- rows shown before scrolling (false = window default)
                             open = false;
                             values = {};
                             objects = {};
@@ -4178,10 +4534,10 @@ function library:init()
                             local size, pos = self.objects.slider.Size, self.objects.slider.Position;
 
                             if self.min >= 0 then
-                                size = newUDim2((newValue - self.min) / (self.max - self.min), 0, 1, 0);
+                                size, pos = sliderFill(self.min, self.max, newValue);
                             else
-                                size = newUDim2(newValue / (self.max - self.min), 0, 1, 0);
-                                pos = newUDim2((0 - self.min) / (self.max - self.min), 0, 0, 0);
+                                size, pos = sliderFill(self.min, self.max, newValue);
+                                -- negative ranges fill outwards from 0 (handled in sliderFill)
                             end
 
                             utility:Tween(self.objects.slider, 'Size', size, .05, Enum.EasingDirection.Out, Enum.EasingStyle.Quad);
@@ -5219,6 +5575,7 @@ function library:init()
                         callback = function() end;
                         enabled = true;
                         multi = false;
+                        maxVisible = false; -- rows shown before scrolling (false = window default)
                         open = false;
                         risky = false;
                         values = {};
@@ -5527,7 +5884,14 @@ function library:init()
             function tab:Select()
                 local previous = window.selectedTab;
                 window.selectedTab = tab;
+                if window.dropdown.selected then
+                    window.dropdown:Close();
+                end
+                if window.colorpicker.selected then
+                    window.colorpicker.selected:SetOpen(false);
+                end
                 window:UpdateTabs();
+                library.hoverDirty = true;
 
                 -- switching tabs: new sections fade in while the columns rise into place
                 if previous ~= nil and previous ~= tab and window.open then
@@ -5677,7 +6041,7 @@ function library:init()
             -- stored as the center so the watermark stays put while its text width changes
             anchor = nil;
             position = newUDim2(0,0,0,0);
-            refreshrate = 25;
+            refreshrate = 250; -- ms between text updates (was 25 = 40 rebuilds a second)
         }
 
         function self.watermark:ApplyPosition()
@@ -6112,9 +6476,11 @@ function library:CreateSettingsTab(menu)
         setByPreset = true
         for _,v in next, library.themes do
             if v.name == newTheme then
+                -- update the pickers without callbacks, then recolor everything once
+                -- (before, every picker re-applied the whole theme: ~20 full recolors per preset)
                 for x, d in pairs(library.options) do
-                    if v.theme[tostring(x)] ~= nil then
-                        d:SetColor(v.theme[tostring(x)])
+                    if d.class == 'color' and v.theme[tostring(x)] ~= nil then
+                        d:SetColor(v.theme[tostring(x)], true)
                     end
                 end
                 library:SetTheme(v.theme)
