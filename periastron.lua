@@ -230,6 +230,30 @@ local library = {
     fileext = startupArgs.fileext or '.txt';
 }
 
+-- animation timings (seconds). set any of these to 0 to turn that animation off
+library.animations = {
+    enabled = true;   -- master switch
+    color = .12;      -- hover / toggle / tab color easing
+    tab = .22;        -- tab switch fade + rise
+    tabOffset = 6;    -- how many pixels sections rise when switching tabs
+    popup = .16;      -- dropdown / color picker open
+    popupOffset = 4;
+    window = .22;     -- menu open rise
+    windowOffset = 8;
+    indicator = .25;  -- sliding tab underline
+}
+
+-- window decorations (can be changed at runtime)
+library.decorations = {
+    enabled = true;     -- master switch
+    vines = true;       -- vines growing from the top-left and bottom-right corners
+    shadow = true;      -- soft drop shadow under the window
+    palette = 'nature'; -- 'nature' = green vines with accent blossoms, 'theme' = everything in accent shades
+    sway = true;        -- gentle swaying while the menu is open
+    growTime = .8;      -- seconds for the vines to grow in when the menu opens (0 = instant)
+    density = 1;        -- leaf amount multiplier (0.5 = sparse, 2 = lush)
+}
+
 library.themes = {
     {
         name = 'Default',
@@ -602,20 +626,81 @@ do
         return proxy
     end
 
-    function utility:ApplyThemeColor(v)
+    -- animTime > 0 eases the color (used for hover / toggle / tab changes); theme changes stay instant
+    function utility:ApplyThemeColor(v, animTime)
         if v == nil or v.Object == nil then return end
         local offset = tonumber(v.ThemeColorOffset) or 0
         local outlineOffset = tonumber(v.OutlineThemeColorOffset) or 0
         if v.ThemeColor and v.ThemeColor ~= '' and library.theme[v.ThemeColor] then
-            pcall(function()
-                v.Object.Color = utility:AddRGB(library.theme[v.ThemeColor], fromrgb(offset, offset, offset))
-            end)
+            local target = utility:AddRGB(library.theme[v.ThemeColor], fromrgb(offset, offset, offset))
+            local running = library.tweens[v.Object] and library.tweens[v.Object].Color
+            local animate = library.animations.enabled and typeof(animTime) == 'number' and animTime > 0 and v.Object.Visible
+
+            if animate then
+                utility:Tween(v.Object, 'Color', target, animTime, Enum.EasingDirection.Out, Enum.EasingStyle.Quad)
+            else
+                if running then
+                    running:Cancel()
+                end
+                pcall(function()
+                    v.Object.Color = target
+                end)
+            end
         end
         if v.OutlineThemeColor and v.OutlineThemeColor ~= '' and library.theme[v.OutlineThemeColor] then
             pcall(function()
                 v.Object.OutlineColor = utility:AddRGB(library.theme[v.OutlineThemeColor], fromrgb(outlineOffset, outlineOffset, outlineOffset))
             end)
         end
+    end
+
+    -- // Animation helpers
+
+    -- the "real" transparency of an object, even if a fade is currently running on it
+    local restingTransparency = setmetatable({}, {__mode = 'k'})
+    function utility:GetRestingTransparency(obj)
+        local running = library.tweens[obj] and library.tweens[obj].Transparency
+        if running and restingTransparency[obj] ~= nil then
+            return restingTransparency[obj]
+        end
+        return obj.Transparency
+    end
+
+    -- call right after starting a Transparency tween on obj, so other animations know its real value
+    function utility:SetRestingTransparency(obj, value)
+        restingTransparency[obj] = value
+    end
+
+    -- fades a drawing and all its descendants in from invisible to their normal transparency
+    function utility:FadeIn(root, duration)
+        if not library.animations.enabled or not duration or duration <= 0 then return end
+        local rootData = root and root.Object and library.drawings[root.Object]
+        if not rootData then return end
+
+        local list = rootData:GetDescendants()
+        table.insert(list, rootData)
+
+        for _, d in next, list do
+            local obj = d.Object
+            if obj ~= nil then
+                local target = utility:GetRestingTransparency(obj)
+                if target ~= 0 then -- 0 = invisible hit areas, leave them alone
+                    obj.Transparency = 0
+                    utility:Tween(obj, 'Transparency', target, duration, Enum.EasingDirection.Out, Enum.EasingStyle.Quad)
+                    restingTransparency[obj] = target -- set after Tween() so the cancelled tween can't clear it
+                end
+            end
+        end
+    end
+
+    -- eases a drawing's Position from (target + offset) to target
+    function utility:SlideIn(drawing, target, offset, duration)
+        if not library.animations.enabled or not duration or duration <= 0 then
+            drawing.Position = target
+            return
+        end
+        drawing.Position = target + offset
+        return utility:Tween(drawing, 'Position', target, duration, Enum.EasingDirection.Out, Enum.EasingStyle.Quint)
     end
 
     function utility:MouseOver(obj)
@@ -630,7 +715,7 @@ do
     function utility:GetHoverObject()
         local objects = {}
         for i,v in next, library.drawings do
-            if v.Object.Visible and v.Class == 'Square' and self:MouseOver(v.Object) then
+            if v.Object.Visible and v.Class == 'Square' and not v.NoHit and self:MouseOver(v.Object) then
                 table.insert(objects,v.Object)
             end
         end
@@ -656,6 +741,9 @@ do
             AbsolutePosition = newVector2(0,0);
             Hover = false;
             Visible = true;
+            ColorTween = library.animations and library.animations.color or .12; -- seconds to ease ThemeColor changes (0 = instant)
+            Ready = false; -- becomes true after creation, so initial colors never animate
+            NoHit = false; -- true = purely decorative, ignored by hover/click detection
             MouseButton1Down = library.signal.new();
             MouseButton2Down = library.signal.new();
             MouseButton1Up = library.signal.new();
@@ -752,6 +840,12 @@ do
                     if v ~= nil and not table.find(v.Children, drawing) then
                         table.insert(v.Children,drawing)
                     end
+                elseif i == 'Transparency' then
+                    -- an explicit set wins over any fade that's running on this object
+                    local running = library.tweens[drawing.Object] and library.tweens[drawing.Object].Transparency
+                    if running then
+                        running:Cancel()
+                    end
                 elseif i == 'Visible' then
                     drawing.Visible = v
                 elseif i == 'Font' and v == 2 and executor == 'ScriptWare' then
@@ -769,8 +863,8 @@ do
                     drawing:Update()
                 end
                 if table.find({'ThemeColor','OutlineThemeColor','ThemeColorOffset','OutlineThemeColorOffset'},i) and lastval ~= v then
-                    -- only recolor this drawing instead of every drawing in the library
-                    utility:ApplyThemeColor(drawing)
+                    -- only recolor this drawing instead of every drawing in the library (eased once it exists)
+                    utility:ApplyThemeColor(drawing, drawing.Ready and drawing.ColorTween or 0)
                 end
 
             end
@@ -817,6 +911,7 @@ do
         end
 
         drawing:Update()
+        drawing.Ready = true
         return proxy
     end
 end
@@ -1834,6 +1929,14 @@ function library:init()
                 Parent = objs.groupBackground;
             })
 
+            -- accent line that slides under the selected tab
+            objs.tabIndicator = utility:Draw('Square', {
+                Size = newUDim2(0,0,0,1);
+                ThemeColor = 'Accent';
+                ZIndex = z+8;
+                Parent = objs.tabHolder;
+            })
+
 
             objs.dragdetector = utility:Draw('Square',{
                 Size = newUDim2(1,0,1,0);
@@ -1845,6 +1948,14 @@ function library:init()
             local dragging, mouseStart, objStart;
 
             utility:Connection(objs.dragdetector.MouseButton1Down, function(pos)
+                -- stop the open animation so it doesn't fight the drag
+                local running = library.tweens[objs.background] and library.tweens[objs.background].Position
+                if running then
+                    running:Cancel();
+                    if window.restPosition then
+                        objs.background.Position = window.restPosition;
+                    end
+                end
                 dragging = true;
                 mouseStart = newUDim2(0, pos.X, 0, pos.Y);
                 objStart = objs.background.Position;
@@ -1858,12 +1969,274 @@ function library:init()
                 if dragging then
                     if window.open then
                         objs.background.Position = objStart + newUDim2(0, pos.X, 0, pos.Y) - mouseStart;
+                        window.restPosition = objs.background.Position;
                     else
                         dragging = false
                     end
                 end
             end)
 
+        end
+        -------------------------
+
+        ---- Decorations ----
+        -- Everything is parented to the window so it moves, fades and hides with it,
+        -- and flagged NoHit so it never blocks clicks. Wrapped in pcall so a Drawing
+        -- limitation on some executor can never break the window itself.
+        local decoOk, decoErr = pcall(function()
+            local deco = library.decorations
+            local objs = window.objects
+            local z = library.zindexOrder.window
+            local frame = objs.outerBorder2 -- outermost window border
+
+            -- soft drop shadow: a few stacked, very transparent black squares, slightly offset down
+            local shadowLayers = {}
+            for i = 1, 4 do
+                shadowLayers[i] = utility:Draw('Square', {
+                    Size = newUDim2(1, i * 4, 1, i * 4);
+                    Position = newUDim2(0, -i * 2, 0, -i * 2 + 3);
+                    Color = c3new(0, 0, 0);
+                    Transparency = .14 - i * .03;
+                    ZIndex = z - 6 - i;
+                    NoHit = true;
+                    Parent = frame;
+                })
+            end
+
+            -- // Vines
+            -- a stem is a wavy line that grows from a window corner along one edge, sitting just outside the frame.
+            -- leaves are small diamond quads along the stem, blossoms are accent circles.
+            local palettes = {
+                nature = {
+                    stem = {color = fromrgb(52, 98, 48)},
+                    leaf1 = {color = fromrgb(78, 140, 64)},
+                    leaf2 = {color = fromrgb(104, 168, 80)},
+                },
+                theme = {
+                    stem = {theme = 'Accent', offset = -110},
+                    leaf1 = {theme = 'Accent', offset = -70},
+                    leaf2 = {theme = 'Accent', offset = -35},
+                },
+            }
+
+            local function paint(drawing, style)
+                if style.theme then
+                    drawing.ThemeColorOffset = style.offset or 0
+                    drawing.ThemeColor = style.theme
+                else
+                    drawing.ThemeColor = ''
+                    drawing.Color = style.color
+                end
+            end
+
+            local SEGMENTS = 22
+            local stems = {}
+
+            -- corner: 'tl' or 'br'; dir/normal are unit vectors (along the edge / pointing away from the window)
+            local function newStem(corner, dir, normal, edge, fraction, phase)
+                local stem = {
+                    corner = corner, dir = dir, normal = normal, edge = edge,
+                    fraction = fraction, phase = phase,
+                    lines = {}, leaves = {}, blossoms = {},
+                }
+
+                for i = 1, SEGMENTS do
+                    stem.lines[i] = utility:Draw('Line', {
+                        Thickness = 1,
+                        Transparency = 1,
+                        ZIndex = z + 3,
+                        Visible = false,
+                        Parent = objs.background,
+                    })
+                end
+
+                local leafEvery = math.max(1, math.floor(3 / math.max(deco.density, .1) + .5))
+                local side = 1
+                for i = 2, SEGMENTS - 1, leafEvery do
+                    -- a leaf is a diamond made of two triangles (Quad isn't supported everywhere)
+                    local function half()
+                        return utility:Draw('Triangle', {
+                            Filled = true,
+                            Thickness = 1,
+                            Transparency = .95,
+                            ZIndex = z + 4,
+                            Visible = false,
+                            Parent = objs.background,
+                        })
+                    end
+                    local leaf = {
+                        segment = i,
+                        side = side, -- 1 = outward, -1 = small leaf hugging the frame
+                        halves = {half(), half()},
+                    }
+                    side = -side
+                    table.insert(stem.leaves, leaf)
+                end
+
+                -- blossoms at the base and the tip
+                for _, at in ipairs({0.04, 1}) do
+                    local blossom = {
+                        at = at,
+                        petal = utility:Draw('Circle', {
+                            Filled = true, NumSides = 12, Radius = 2.6, Transparency = 1,
+                            ThemeColor = 'Accent', ZIndex = z + 5, Visible = false, Parent = objs.background,
+                        }),
+                        center = utility:Draw('Circle', {
+                            Filled = true, NumSides = 8, Radius = 1, Transparency = 1,
+                            Color = fromrgb(255, 240, 200), ZIndex = z + 6, Visible = false, Parent = objs.background,
+                        }),
+                    }
+                    table.insert(stem.blossoms, blossom)
+                end
+
+                table.insert(stems, stem)
+                return stem
+            end
+
+            newStem('tl', newVector2(1, 0), newVector2(0, -1), 'x', .38, 0)    -- along the top
+            newStem('tl', newVector2(0, 1), newVector2(-1, 0), 'y', .32, 1.7)  -- down the left side
+            newStem('br', newVector2(-1, 0), newVector2(0, 1), 'x', .30, 3.1)  -- along the bottom
+            newStem('br', newVector2(0, -1), newVector2(1, 0), 'y', .26, 4.4)  -- up the right side
+
+            local currentPalette
+            local function applyPalette()
+                local palette = palettes[deco.palette] or palettes.nature
+                if palette == currentPalette then return end
+                currentPalette = palette
+                for _, stem in ipairs(stems) do
+                    for _, line in ipairs(stem.lines) do
+                        paint(line, palette.stem)
+                    end
+                    for i, leaf in ipairs(stem.leaves) do
+                        local style = i % 2 == 0 and palette.leaf2 or palette.leaf1
+                        paint(leaf.halves[1], style)
+                        paint(leaf.halves[2], style)
+                    end
+                end
+            end
+            applyPalette()
+
+            -- only touch Visible when it actually changes (each change re-runs the drawing's Update)
+            local function setShown(drawing, shown)
+                if drawing.Visible ~= shown then
+                    drawing.Visible = shown
+                end
+            end
+
+            local wasOpen, openedAt = false, 0
+            local shadowShown = true
+            local broken = false
+
+            local function updateDecorations()
+                local frameObj = frame.Object
+                if frameObj == nil then return end -- unloaded
+
+                -- shadow toggle
+                local wantShadow = deco.enabled and deco.shadow
+                if wantShadow ~= shadowShown then
+                    shadowShown = wantShadow
+                    for _, layer in ipairs(shadowLayers) do
+                        setShown(layer, wantShadow)
+                    end
+                end
+
+                if not window.open then
+                    wasOpen = false
+                    return
+                end
+                if not wasOpen then
+                    wasOpen = true
+                    openedAt = os.clock()
+                end
+
+                local active = deco.enabled and deco.vines
+                applyPalette()
+
+                local now = os.clock()
+                local grown = (deco.growTime and deco.growTime > 0) and clamp((now - openedAt) / deco.growTime, 0, 1) or 1
+                grown = 1 - (1 - grown) ^ 3 -- ease out
+                local swayTime = deco.sway and now or 0
+
+                local origin = frameObj.Position
+                local size = frameObj.Size
+                local bgPos = objs.background.Object.Position
+
+                for _, stem in ipairs(stems) do
+                    local corner = stem.corner == 'tl' and origin or (origin + size)
+                    local length = (stem.edge == 'x' and size.X or size.Y) * stem.fraction
+                    local step = length / SEGMENTS
+
+                    -- point on the stem at distance s (wave grows towards the tip, and sways over time)
+                    local function pointAt(s)
+                        local t = s / math.max(length, 1)
+                        local wave = math.sin(s * .16 + stem.phase) * (1.2 + 1.6 * t)
+                        local sway = math.sin(swayTime * 1.4 + stem.phase + s * .05) * .9 * t
+                        return corner + stem.dir * s + stem.normal * (1.5 + wave + sway)
+                    end
+
+                    local visibleSegments = active and math.floor(SEGMENTS * grown + .5) or 0
+
+                    for i, line in ipairs(stem.lines) do
+                        local shown = i <= visibleSegments
+                        setShown(line, shown)
+                        if shown then
+                            local a, b = pointAt((i - 1) * step), pointAt(i * step)
+                            local raw = line.Object
+                            raw.From = a
+                            raw.To = b
+                            raw.Thickness = 2.2 - 1.2 * (i / SEGMENTS) -- taper towards the tip
+                        end
+                    end
+
+                    for _, leaf in ipairs(stem.leaves) do
+                        local shown = leaf.segment <= visibleSegments
+                        setShown(leaf.halves[1], shown)
+                        setShown(leaf.halves[2], shown)
+                        if shown then
+                            local s = leaf.segment * step
+                            local base = pointAt(s)
+                            local tangent = (pointAt(s + 1) - base).Unit
+                            local flutter = math.sin(swayTime * 2.1 + leaf.segment) * .25
+                            local outward = stem.normal * leaf.side
+                            local dir = (tangent * (.7 + flutter) + outward).Unit
+                            local perp = newVector2(-dir.Y, dir.X)
+                            local leafLength = (leaf.side > 0 and 7.5 or 4.5) * (1 - .35 * (leaf.segment / SEGMENTS))
+                            local width = leafLength * .32
+                            local tip = base + dir * leafLength
+                            local mid = base + dir * (leafLength * .45)
+                            local left, right = mid + perp * width, mid - perp * width
+                            local a, b = leaf.halves[1].Object, leaf.halves[2].Object
+                            a.PointA, a.PointB, a.PointC = base, left, tip
+                            b.PointA, b.PointB, b.PointC = base, right, tip
+                        end
+                    end
+
+                    for _, blossom in ipairs(stem.blossoms) do
+                        -- the tip blossom only appears once the vine has finished growing
+                        local shown = active and (blossom.at < 1 or grown >= .98)
+                        setShown(blossom.petal, shown)
+                        setShown(blossom.center, shown)
+                        if shown then
+                            local p = pointAt(length * blossom.at) - bgPos
+                            local pos = newUDim2(0, p.X, 0, p.Y)
+                            blossom.petal.Position = pos
+                            blossom.center.Position = pos
+                        end
+                    end
+                end
+            end
+
+            utility:Connection(runservice.RenderStepped, function()
+                if broken then return end
+                local ok, err = pcall(updateDecorations)
+                if not ok then
+                    broken = true
+                    log('window decorations stopped: '..tostring(err))
+                end
+            end)
+        end)
+        if not decoOk then
+            log('window decorations disabled: '..tostring(decoErr))
         end
         -------------------------
 
@@ -2365,6 +2738,19 @@ function library:init()
             end
         
             window.dropdown:Refresh();
+
+            -- drops down a few pixels while fading in
+            function window.dropdown:AnimateOpen()
+                local anim = library.animations
+                utility:SlideIn(self.objects.background, newUDim2(0,3,1,0), newUDim2(0,0,0,-anim.popupOffset), anim.popup)
+                utility:FadeIn(self.objects.background, anim.popup)
+            end
+
+            function window.colorpicker:AnimateOpen()
+                local anim = library.animations
+                utility:SlideIn(self.objects.background, newUDim2(1,-200,1,10), newUDim2(0,0,0,-anim.popupOffset), anim.popup)
+                utility:FadeIn(self.objects.background, anim.popup)
+            end
         end
         -------------------------
 
@@ -2401,6 +2787,15 @@ function library:init()
 
                 if bool then
                     self.objects.background.Visible = true;
+                    -- rise into place (restPosition is the dragged position, so spamming the key can't drift the window)
+                    local anim = library.animations
+                    local running = library.tweens[self.objects.background] and library.tweens[self.objects.background].Position
+                    if not running then
+                        self.restPosition = self.objects.background.Position
+                    end
+                    if self.restPosition then
+                        utility:SlideIn(self.objects.background, self.restPosition, newUDim2(0, 0, 0, anim.windowOffset), anim.window)
+                    end
                 else
                     -- hide after the fade, unless the menu was reopened in the meantime
                     task.delay(fadeTime, function()
@@ -2417,14 +2812,16 @@ function library:init()
                             -- only restore things we faded out (fresh objects already have the right value)
                             if visValues[v] ~= nil then
                                 utility:Tween(obj, 'Transparency', visValues[v], fadeTime, Enum.EasingDirection.Out, Enum.EasingStyle.Quad);
+                                utility:SetRestingTransparency(obj, visValues[v]);
                                 visValues[v] = nil;
                             end
                         elseif obj.Transparency ~= 0 then
                             -- remember the real value once, so spamming the keybind can't "lose" it mid-fade
                             if visValues[v] == nil then
-                                visValues[v] = obj.Transparency;
+                                visValues[v] = utility:GetRestingTransparency(obj);
                             end
                             utility:Tween(obj, 'Transparency', 0, fadeTime, Enum.EasingDirection.Out, Enum.EasingStyle.Quad);
+                            utility:SetRestingTransparency(obj, visValues[v]);
                         end
                     end
                 end
@@ -2881,6 +3278,7 @@ function library:init()
                                     window.colorpicker.objects.background.Parent = self.objects.background;
                                     window.colorpicker.objects.background.Visible = true;
                                     window.colorpicker:Visualize(color.color, color.trans)
+                                    window.colorpicker:AnimateOpen()
                                 elseif window.colorpicker.selected == color then
                                     window.colorpicker.selected = nil;
                                     window.colorpicker.objects.background.Parent = window.objects.background;
@@ -3403,6 +3801,7 @@ function library:init()
                                     window.dropdown.objects.background.Visible = true;
                                     window.dropdown.objects.background.Parent = objs.holder;
                                     window.dropdown:Refresh();
+                                    window.dropdown:AnimateOpen();
                                 end
                             end)
     
@@ -4266,6 +4665,7 @@ function library:init()
                                 window.colorpicker.objects.background.Parent = self.objects.background;
                                 window.colorpicker.objects.background.Visible = true;
                                 window.colorpicker:Visualize(color.color, color.trans)
+                                window.colorpicker:AnimateOpen()
                             elseif window.colorpicker.selected == color then
                                 window.colorpicker.selected = nil;
                                 window.colorpicker.objects.background.Parent = window.objects.background;
@@ -4841,6 +5241,7 @@ function library:init()
                                 window.dropdown.objects.background.Visible = true;
                                 window.dropdown.objects.background.Parent = objs.holder;
                                 window.dropdown:Refresh();
+                                window.dropdown:AnimateOpen();
                             end
                         end)
 
@@ -5024,8 +5425,23 @@ function library:init()
             end
 
             function tab:Select()
+                local previous = window.selectedTab;
                 window.selectedTab = tab;
                 window:UpdateTabs();
+
+                -- switching tabs: new sections fade in while the columns rise into place
+                if previous ~= nil and previous ~= tab and window.open then
+                    local anim = library.animations;
+                    local offset = newUDim2(0, 0, 0, anim.tabOffset);
+                    utility:SlideIn(window.objects.columnholder1, newUDim2(.01, 0, .02, 0), offset, anim.tab);
+                    utility:SlideIn(window.objects.columnholder2, newUDim2(1 - (.48 + .01), 0, .02, 0), offset, anim.tab);
+                    for _, section in next, tab.sections do
+                        if section.enabled then
+                            utility:FadeIn(section.objects.background, anim.tab);
+                        end
+                    end
+                end
+
                 for i,v in next, window.tabs do
                     if v.callback then
                         v.callback(v == tab)
@@ -5057,7 +5473,28 @@ function library:init()
                 objs.text.ThemeColor = v.selected and 'Selected Tab Text' or 'Unselected Tab Text';
                 objs.text.Position = newUDim2(.5, 0, 0, 3);
 
-                objs.topBorder.ThemeColor = v.selected and 'Accent' or 'Unselected Tab Background';
+                -- the accent line is drawn by the sliding tabIndicator now
+                objs.topBorder.ThemeColor = v.selected and 'Selected Tab Background' or 'Unselected Tab Background';
+
+                if v.selected then
+                    local indicator = self.objects.tabIndicator;
+                    local targetPos = newUDim2(0, pos, 0, 0);
+                    local targetSize = newUDim2(0, objs.background.Size.X.Offset, 0, 1);
+                    local anim = library.animations;
+                    local placed = indicator.Size.X.Offset > 0;
+
+                    if placed and self.open and anim.enabled and anim.indicator > 0 then
+                        if indicator.Position ~= targetPos then
+                            utility:Tween(indicator, 'Position', targetPos, anim.indicator, Enum.EasingDirection.Out, Enum.EasingStyle.Quint);
+                        end
+                        if indicator.Size ~= targetSize then
+                            utility:Tween(indicator, 'Size', targetSize, anim.indicator, Enum.EasingDirection.Out, Enum.EasingStyle.Quint);
+                        end
+                    else
+                        indicator.Position = targetPos;
+                        indicator.Size = targetSize;
+                    end
+                end
 
                 pos += objs.background.Size.X.Offset + 1
 
@@ -5366,7 +5803,7 @@ function library:CreateSettingsTab(menu)
 
     mainSection:AddButton({text = 'Join Discord', flag = 'joindiscord', confirm = true, callback = function()
         if not httpRequest then
-            setclip('discord.gg/zPyX4BZH9q')
+            setclip('discord.gg/seU6gab')
             library:SendNotification('Executor has no request function, invite copied instead.', 5);
             return
         end
@@ -5389,7 +5826,7 @@ function library:CreateSettingsTab(menu)
     end})
     
     mainSection:AddButton({text = 'Copy Discord', flag = 'copydiscord', callback = function()
-        setclip('discord.gg/zPyX4BZH9q')
+        setclip('discord.gg/seU6gab')
     end})
 
     mainSection:AddButton({text = 'Rejoin Server', confirm = true, callback = function()
