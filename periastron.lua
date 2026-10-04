@@ -1003,27 +1003,46 @@ function library:init()
         end
     end
 
-    self.cursor1 = utility:Draw('Triangle', {Filled = true, Color = fromrgb(255,255,255), ZIndex = self.zindexOrder.cursor});
-    self.cursor2 = utility:Draw('Triangle', {Filled = true, Color = fromrgb(85,85,85), ZIndex = self.zindexOrder.cursor-1});
+    -- // Cursor
+    -- accent-filled arrow with a dark outline, drawn every frame so it never lags behind the real mouse
+    self.cursorFill = utility:Draw('Triangle', {Filled = true, ThemeColor = 'Accent', Visible = false, ZIndex = self.zindexOrder.cursor});
+    self.cursorOutline = utility:Draw('Triangle', {Filled = false, Thickness = 1.5, Color = fromrgb(10,10,10), Visible = false, ZIndex = self.zindexOrder.cursor+1});
+    -- kept for scripts that referenced the old names
+    self.cursor1, self.cursor2 = self.cursorFill, self.cursorOutline
+
     local function updateCursor()
-        self.cursor1.Visible = self.open
-        self.cursor2.Visible = self.open
-        if self.cursor1.Visible then
+        local show = self.open
+        self.cursorFill.Visible = show
+        self.cursorOutline.Visible = show
+        if show then
             local pos = inputservice:GetMouseLocation();
-            self.cursor1.PointA = pos;
-            self.cursor1.PointB = pos + newVector2(16,5);
-            self.cursor1.PointC = pos + newVector2(5,16);
-            self.cursor2.PointA = self.cursor1.PointA + newVector2(0, 0)
-            self.cursor2.PointB = self.cursor1.PointB + newVector2(1, 1)
-            self.cursor2.PointC = self.cursor1.PointC + newVector2(1, 1)
+            local a, b, c = pos, pos + newVector2(14, 5), pos + newVector2(5, 14)
+            self.cursorFill.PointA, self.cursorFill.PointB, self.cursorFill.PointC = a, b, c
+            self.cursorOutline.PointA, self.cursorOutline.PointB, self.cursorOutline.PointC = a, b, c
         end
     end
 
-    -- invisible modal button so the game doesn't receive mouse input / lock the cursor while the menu is open
+    -- // Real mouse icon
+    -- hidden while the menu is open (games love to turn it back on, so it's enforced every frame)
+    local savedMouseIcon = inputservice.MouseIconEnabled
+    local function setRealMouseHidden(hidden)
+        pcall(function()
+            if hidden then
+                inputservice.MouseIconEnabled = false
+            else
+                inputservice.MouseIconEnabled = savedMouseIcon
+            end
+        end)
+    end
+
+    -- // Input passthrough
+    -- modalButton: tiny button with Modal = true, frees the mouse in first person / shift lock while the menu is open
+    -- inputBlocker: only covers the screen while the mouse is over the menu, so clicks elsewhere reach the game
     local screenGui = Instance.new('ScreenGui');
     screenGui.Name = http:GenerateGUID(false);
     screenGui.ResetOnSpawn = false;
     screenGui.IgnoreGuiInset = true;
+    screenGui.DisplayOrder = 999999;
     pcall(function()
         if syn and syn.protect_gui then syn.protect_gui(screenGui) end
     end)
@@ -1033,11 +1052,21 @@ function library:init()
     if not guiParentOk then
         screenGui.Parent = localplayer:WaitForChild('PlayerGui');
     end
-    screenGui.Enabled = true;
-    utility:Instance('ImageButton', {
+    screenGui.Enabled = false;
+
+    local modalButton = utility:Instance('TextButton', {
         Parent = screenGui,
         Visible = true,
         Modal = true,
+        Text = '',
+        Size = UDim2.new(0,0,0,0),
+        BackgroundTransparency = 1;
+        AutoButtonColor = false;
+    })
+
+    local inputBlocker = utility:Instance('ImageButton', {
+        Parent = screenGui,
+        Visible = false,
         Size = UDim2.new(1,0,1,0),
         ZIndex = 99999,
         BackgroundTransparency = 1;
@@ -1045,8 +1074,41 @@ function library:init()
         AutoButtonColor = false;
     })
 
+    -- holding right click outside the menu temporarily locks the mouse again so you can look around
+    local lookingAround = false
+    local function setMouseOverUI(over)
+        library.mouseOverUI = over
+        inputBlocker.Visible = over and self.open and not lookingAround
+    end
+
     utility:Connection(library.unloaded, function()
+        setRealMouseHidden(false)
         screenGui:Destroy()
+    end)
+
+    utility:Connection(runservice.RenderStepped, function()
+        if self.open then
+            updateCursor()
+            if inputservice.MouseIconEnabled then
+                setRealMouseHidden(true)
+            end
+        end
+    end)
+
+    utility:Connection(inputservice.InputBegan, function(input)
+        if self.open and input.UserInputType == Enum.UserInputType.MouseButton2 and not library.mouseOverUI then
+            lookingAround = true
+            modalButton.Modal = false
+            inputBlocker.Visible = false
+        end
+    end)
+
+    utility:Connection(inputservice.InputEnded, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton2 and lookingAround then
+            lookingAround = false
+            modalButton.Modal = true
+            setMouseOverUI(utility:GetHoverObject() ~= nil)
+        end
     end)
 
     utility:Connection(inputservice.InputBegan, function(input, gpe)
@@ -1064,6 +1126,7 @@ function library:init()
                 local hoverObjData = library.drawings[hoverObj];
                 if input.UserInputType == Enum.UserInputType.MouseButton1 then
                     mb1down = true;
+                    library.pressStartedOverUI = hoverObj ~= nil;
                     button1down:Fire()
                     if hoverObj and hoverObjData then
                         hoverObjData.MouseButton1Down:Fire(inputservice:GetMouseLocation())
@@ -1126,6 +1189,8 @@ function library:init()
                 end
 
                 local hoverObj = utility:GetHoverObject();
+                -- keep blocking while dragging something that started on the menu (sliders, window drag)
+                setMouseOverUI(hoverObj ~= nil or (mb1down and library.pressStartedOverUI == true))
                 for _,v in next, library.drawings do
                     local hover = hoverObj == v.Object;
                     if hover and not v.Hover then
@@ -1152,8 +1217,23 @@ function library:init()
     end)
     
     function self:SetOpen(bool)
+        local wasOpen = self.open
         self.open = bool;
         screenGui.Enabled = bool;
+
+        if bool then
+            if not wasOpen then
+                -- remember the game's own setting so closing the menu restores it
+                savedMouseIcon = inputservice.MouseIconEnabled
+            end
+            setRealMouseHidden(true)
+            setMouseOverUI(utility:GetHoverObject() ~= nil)
+        else
+            lookingAround = false
+            modalButton.Modal = true
+            setMouseOverUI(false)
+            setRealMouseHidden(false)
+        end
 
         if bool and library.flags.disablemenumovement then
             actionservice:BindAction(
@@ -1193,105 +1273,204 @@ function library:init()
             return error(string.format('invalid color type, got %s, expected color3', typeof(color)))
         end
 
-        local notification = {};
+        -- // Notification card
+        -- slides + fades in from the left, shows a countdown bar, then slides + fades out.
+        -- Cards stack top-down (newest at the bottom) and the stack eases into place when one leaves.
+        local notifSettings = self.notificationSettings
+        local z = self.zindexOrder.notification
+        local height = notifSettings.height
+        local accentColor = color
 
-        self.notifications[notification] = true
+        local notification = {
+            objects = {};
+            targets = {};   -- final transparency of each drawing, used for the fade in/out
+            width = 0;
+            removing = false;
+        };
+        local objs = notification.objects
 
-        do
-            local objs = notification;
-            local z = self.zindexOrder.notification;
-
-            notification.holder = utility:Draw('Square', {
-                Position = newUDim2(0, 0, 0, 75);
-                Transparency = 0;
-            })
-            
-            notification.background = utility:Draw('Square', {
-                Size = newUDim2(1,0,1,0);
-                Position = newUDim2(0, -500, 0, 0);
-                Parent = notification.holder;
-                ThemeColor = 'Background';
-                ZIndex = z;
-            })
-
-            notification.border1 = utility:Draw('Square', {
-                Size = newUDim2(1,2,1,2);
-                Position = newUDim2(0,-1,0,-1);
-                ThemeColor = 'Border 2';
-                Parent = notification.background;
-                ZIndex = z-1;
-            })
-
-            objs.border2 = utility:Draw('Square', {
-                Size = newUDim2(1,2,1,2);
-                Position = newUDim2(0,-1,0,-1);
-                ThemeColor = 'Border 3';
-                Parent = objs.border1;
-                ZIndex = z-2;
-            })
-
-            notification.gradient = utility:Draw('Image', {
-                Size = newUDim2(1,0,1,0);
-                Data = self.images.gradientp90;
-                Parent = notification.background;
-                Transparency = .5;
-                ZIndex = z+1;
-            })
-
-            notification.accentBar = utility:Draw('Square',{
-                Size = newUDim2(0,5,1,4);
-                Position = newUDim2(0,0,0,-2);
-                Parent = notification.background;
-                ThemeColor = color == nil and 'Accent' or '';
-                ZIndex = z+5;
-            })
-
-            notification.text = utility:Draw('Text', {
-                Position = newUDim2(0,13,0,2);
-                ThemeColor = 'Primary Text';
-                Text = message;
-                Outline = true;
-                Font = 2;
-                Size = 13;
-                ZIndex = z+4;
-                Parent = notification.background;
-            })
-
-            if color then
-                notification.accentBar.Color = color;
+        -- new cards spawn directly in the next free slot
+        local slot = 0
+        for _, v in ipairs(self.notifications) do
+            if not v.removing then
+                slot += 1
             end
+        end
 
+        objs.holder = utility:Draw('Square', {
+            Size = newUDim2(0, 0, 0, height);
+            Position = newUDim2(0, notifSettings.x, 0, notifSettings.y + slot * (height + notifSettings.spacing));
+            Transparency = 0;
+            ZIndex = z;
+        })
+
+        objs.background = utility:Draw('Square', {
+            Size = newUDim2(0, 200, 0, height);
+            ThemeColor = 'Background';
+            ZIndex = z;
+            Parent = objs.holder;
+        })
+
+        objs.border1 = utility:Draw('Square', {
+            Size = newUDim2(1,2,1,2);
+            Position = newUDim2(0,-1,0,-1);
+            ThemeColor = 'Border 1';
+            ZIndex = z-1;
+            Parent = objs.background;
+        })
+
+        objs.border2 = utility:Draw('Square', {
+            Size = newUDim2(1,2,1,2);
+            Position = newUDim2(0,-1,0,-1);
+            ThemeColor = 'Border 3';
+            ZIndex = z-2;
+            Parent = objs.border1;
+        })
+
+        objs.gradient = utility:Draw('Image', {
+            Size = newUDim2(1,0,1,0);
+            Data = self.images.gradientp90;
+            Transparency = .35;
+            ZIndex = z+1;
+            Parent = objs.background;
+        })
+
+        objs.accentBar = utility:Draw('Square', {
+            Size = newUDim2(0,2,1,0);
+            ThemeColor = accentColor == nil and 'Accent' or '';
+            ZIndex = z+3;
+            Parent = objs.background;
+        })
+
+        objs.text = utility:Draw('Text', {
+            Position = newUDim2(0,10,.5,-7);
+            ThemeColor = 'Primary Text';
+            Text = message;
+            Outline = true;
+            Font = 2;
+            Size = 13;
+            ZIndex = z+4;
+            Parent = objs.background;
+        })
+
+        objs.progressTrack = utility:Draw('Square', {
+            Size = newUDim2(1,-2,0,1);
+            Position = newUDim2(0,2,1,-1);
+            ThemeColor = 'Border 2';
+            ZIndex = z+2;
+            Parent = objs.background;
+        })
+
+        objs.progress = utility:Draw('Square', {
+            Size = newUDim2(1,-2,0,1);
+            Position = newUDim2(0,2,1,-1);
+            ThemeColor = accentColor == nil and 'Accent' or '';
+            ZIndex = z+3;
+            Parent = objs.background;
+        })
+
+        if accentColor then
+            objs.accentBar.Color = accentColor;
+            objs.progress.Color = accentColor;
+        end
+
+        -- size the card to the text, then park it off-screen to the left
+        notification.width = math.max(objs.text.TextBounds.X + 22, notifSettings.minWidth)
+        objs.background.Size = newUDim2(0, notification.width, 0, height)
+        objs.background.Position = newUDim2(0, -(notification.width + notifSettings.x + 10), 0, 0)
+
+        -- start fully transparent and remember where each piece should fade to
+        for name, obj in next, objs do
+            if name ~= 'holder' then
+                notification.targets[obj] = obj.Transparency
+                obj.Transparency = 0
+            end
+        end
+
+        local function fade(visible, duration, direction)
+            for obj, target in next, notification.targets do
+                utility:Tween(obj, 'Transparency', visible and target or 0, duration, direction, Enum.EasingStyle.Quad)
+            end
         end
 
         function notification:Remove()
-            library.notifications[notification] = nil;
-            self.holder:Remove();
+            local idx = table.find(library.notifications, notification)
+            if idx then
+                table.remove(library.notifications, idx)
+            end
+            if objs.holder then
+                objs.holder:Remove()
+            end
             library:UpdateNotifications()
         end
 
-        task.spawn(function()
-            self:UpdateNotifications();
-            notification.background.Size = newUDim2(0, notification.text.TextBounds.X + 20, 0, 19)
-            task.wait();
-            utility:Tween(notification.background, 'Position', newUDim2(0,0,0, 0), .1);
-            task.wait(time);
-            for i,v in next, notification do
-                if typeof(v) ~= 'function' then
-                    utility:Tween(v, 'Transparency', 0, .15);
-                end
+        function notification:Dismiss()
+            if self.removing then return end
+            self.removing = true
+
+            fade(false, notifSettings.outTime * .9, Enum.EasingDirection.In)
+            local outTween = utility:Tween(objs.background, 'Position', newUDim2(0, -(self.width + notifSettings.x + 10), 0, 0), notifSettings.outTime, Enum.EasingDirection.In, Enum.EasingStyle.Quint)
+
+            if outTween then
+                outTween.Completed:Once(function()
+                    notification:Remove()
+                end)
+            else
+                notification:Remove()
             end
-            utility:Connection(utility:Tween(notification.background, 'Position', newUDim2(0,-500,0, 0), .25).Completed, (function()
-                notification:Remove();
-            end))
+        end
+
+        table.insert(self.notifications, notification)
+
+        -- too many on screen: push the oldest out early
+        local active = {}
+        for _, v in ipairs(self.notifications) do
+            if not v.removing then
+                table.insert(active, v)
+            end
+        end
+        for i = 1, #active - notifSettings.maxVisible do
+            active[i]:Dismiss()
+        end
+
+        self:UpdateNotifications()
+
+        -- in
+        fade(true, notifSettings.inTime, Enum.EasingDirection.Out)
+        utility:Tween(objs.background, 'Position', newUDim2(0, 0, 0, 0), notifSettings.inTime, Enum.EasingDirection.Out, Enum.EasingStyle.Quint)
+
+        -- countdown bar shrinks over the lifetime of the notification
+        utility:Tween(objs.progress, 'Size', newUDim2(0, 0, 0, 1), time, Enum.EasingDirection.InOut, Enum.EasingStyle.Linear)
+
+        task.delay(time, function()
+            if objs.background and objs.background.Object then
+                notification:Dismiss()
+            end
         end)
 
+        return notification
     end
 
+    self.notificationSettings = {
+        x = 14;          -- left margin
+        y = 60;          -- top of the stack
+        height = 24;     -- card height
+        spacing = 6;     -- gap between cards
+        minWidth = 140;
+        maxVisible = 7;
+        inTime = .45;
+        outTime = .35;
+    }
+
     function self:UpdateNotifications()
-        local i = 0
-        for v in next, self.notifications do
-            utility:Tween(v.holder, 'Position', newUDim2(0,0,0, 75 + (i * 30)), .15)
-            i += 1
+        local settings = self.notificationSettings
+        local slot = 0
+        for _, v in ipairs(self.notifications) do
+            if not v.removing then
+                local target = newUDim2(0, settings.x, 0, settings.y + slot * (settings.height + settings.spacing))
+                utility:Tween(v.objects.holder, 'Position', target, .3, Enum.EasingDirection.Out, Enum.EasingStyle.Quint)
+                slot += 1
+            end
         end
     end
 
@@ -2208,30 +2387,45 @@ function library:init()
 
         local visValues = {};
 
+        local fadeTime = .18;
+        local openGeneration = 0;
+
         function window:SetOpen(bool)
             if typeof(bool) == 'boolean' then
                 self.open = bool;
+                openGeneration += 1;
+                local generation = openGeneration;
 
                 local objs = self.objects.background:GetDescendants()
                 table.insert(objs, self.objects.background)
 
-                task.spawn(function()
-                    if not bool then
-                        task.wait(.1);
-                    end
-                    self.objects.background.Visible = bool;
-                end)
+                if bool then
+                    self.objects.background.Visible = true;
+                else
+                    -- hide after the fade, unless the menu was reopened in the meantime
+                    task.delay(fadeTime, function()
+                        if generation == openGeneration and not window.open then
+                            window.objects.background.Visible = false;
+                        end
+                    end)
+                end
 
                 for _,v in next, objs do
-                    if v.Object.Transparency ~= 0 then
-                        task.spawn(function()
-                            if bool then
-                                utility:Tween(v.Object, 'Transparency', visValues[v] or 1, .1);
-                            else
-                                visValues[v] = v.Object.Transparency;
-                                utility:Tween(v.Object, 'Transparency', .05, .1);
+                    local obj = v.Object
+                    if obj ~= nil then
+                        if bool then
+                            -- only restore things we faded out (fresh objects already have the right value)
+                            if visValues[v] ~= nil then
+                                utility:Tween(obj, 'Transparency', visValues[v], fadeTime, Enum.EasingDirection.Out, Enum.EasingStyle.Quad);
+                                visValues[v] = nil;
                             end
-                        end)
+                        elseif obj.Transparency ~= 0 then
+                            -- remember the real value once, so spamming the keybind can't "lose" it mid-fade
+                            if visValues[v] == nil then
+                                visValues[v] = obj.Transparency;
+                            end
+                            utility:Tween(obj, 'Transparency', 0, fadeTime, Enum.EasingDirection.Out, Enum.EasingStyle.Quad);
+                        end
                     end
                 end
             end
