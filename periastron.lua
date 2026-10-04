@@ -3062,6 +3062,7 @@ function library:init()
                         order = #self.options+1;
                         state = false;
                         risky = false;
+                        keybind = false; -- true = adds a [NONE] keybind that flips this toggle
                         callback = function() end;
                         enabled = true;
                         options = {};
@@ -3165,6 +3166,10 @@ function library:init()
 
                             if not nocallback then
                                 self.callback(bool);
+                            end
+
+                            if self.linkedBind then
+                                self.linkedBind:RefreshIndicator();
                             end
 
                         end
@@ -3364,6 +3369,7 @@ function library:init()
                             nomouse = false;
                             enabled = true;
                             binding = false;
+                            linked = false; -- true = the key flips this toggle, 'none' = unbound (see toggle:AddKeybind)
                             objects = {};
                         };
     
@@ -3380,7 +3386,7 @@ function library:init()
                             library.options[bind.flag] = bind;
                         end
 
-                        if bind.bind == 'none' then
+                        if bind.bind == 'none' and not bind.linked then
                             bind.state = true
                             if bind.flag then
                                 library.flags[bind.flag] = bind.state;
@@ -3448,17 +3454,19 @@ function library:init()
                             end
                             if self.bind == Enum.KeyCode.Backspace or self.bind == 'none' then
                                 self.bind = 'none';
-                                bind.state = true
-                                if bind.flag then
-                                    library.flags[bind.flag] = bind.state;
+                                if not bind.linked then
+                                    bind.state = true
+                                    if bind.flag then
+                                        library.flags[bind.flag] = bind.state;
+                                    end
+                                    self.callback(true)
+                                    local display = bind.state; if bind.invertindicator then display = not bind.state; end
+                                    bind.indicatorValue:SetEnabled(display and not bind.noindicator);
                                 end
-                                self.callback(true)
-                                local display = bind.state; if bind.invertindicator then display = not bind.state; end
-                                bind.indicatorValue:SetEnabled(display and not bind.noindicator);
                             else
                                 keyName = getKeyName(self.bind)
                             end
-                            if self.bind ~= 'none' then
+                            if self.bind ~= 'none' and not bind.linked then
                                 bind.state = false
                                 if bind.flag then
                                     library.flags[bind.flag] = bind.state;
@@ -3475,6 +3483,15 @@ function library:init()
                                 self.indicatorValue:SetValue('[Always]');
                             end
                             self.objects.keyText.ThemeColor = self.objects.holder.Hover and 'Accent' or 'Option Text 3';
+                            self:RefreshIndicator();
+                        end
+
+                        -- linked binds show in the keybind list while their toggle is on and a key is set
+                        function bind:RefreshIndicator()
+                            if not self.linked then return end
+                            self.indicatorValue:SetKey((toggle.text ~= nil and toggle.text ~= '') and toggle.text or (toggle.flag or 'unknown'));
+                            self.indicatorValue:SetValue('['..getKeyName(self.bind):upper()..']');
+                            self.indicatorValue:SetEnabled(toggle.state == true and self.bind ~= 'none' and not self.noindicator);
                         end
     
                         function bind:SetKeyText(str)
@@ -3493,8 +3510,18 @@ function library:init()
                                 if inp.UserInputType == Enum.UserInputType.MouseButton1 and os.clock() - (bind.bindingStarted or 0) < 0.05 then
                                     return
                                 end
-                                bind:SetBind(getInputKey(inp, bind.nomouse))
+                                local key = getInputKey(inp, bind.nomouse)
+                                -- for toggle keybinds, left click cancels instead of binding (it would flip the toggle on every click)
+                                if bind.linked and inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                                    key = false
+                                end
+                                bind:SetBind(key)
                                 bind.binding = false
+                            elseif bind.linked then
+                                -- bound key flips the toggle it belongs to
+                                if bind.bind ~= 'none' and (inp.KeyCode == bind.bind or inp.UserInputType == bind.bind) then
+                                    toggle:SetState(not toggle.state);
+                                end
                             elseif not bind.binding and bind.bind == 'none' then
                                 bind.state = true
                                 if bind.flag then
@@ -3916,9 +3943,30 @@ function library:init()
                         return list
                     end
 
+                    -- keybind that flips the toggle. starts as [NONE]; click it, press a key, Backspace clears it.
+                    -- the bind is saved in configs as '<flag>_bind'
+                    function toggle:AddKeybind(bindData)
+                        if self.linkedBind then
+                            return self.linkedBind
+                        end
+                        bindData = typeof(bindData) == 'table' and bindData or {}
+                        self.linkedBind = self:AddBind({
+                            linked = true,
+                            bind = bindData.bind or 'none',
+                            flag = bindData.flag or (self.flag and self.flag..'_bind') or nil,
+                            nomouse = bindData.nomouse == true,
+                            noindicator = bindData.noindicator == true,
+                            tooltip = bindData.tooltip or '',
+                        })
+                        return self.linkedBind
+                    end
+
                     tooltip(toggle);
                     toggle:SetText(toggle.text);
                     toggle:SetState(toggle.state, true);
+                    if toggle.keybind then
+                        toggle:AddKeybind(typeof(data.keybind) == 'table' and data.keybind or nil);
+                    end
                     self:UpdateOptions();
                     return toggle
                 end
