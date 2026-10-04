@@ -703,6 +703,46 @@ do
         return utility:Tween(drawing, 'Position', target, duration, Enum.EasingDirection.Out, Enum.EasingStyle.Quint)
     end
 
+    -- makes drawings draggable while the menu is open.
+    -- getPos/setPos work in screen pixels (Vector2); onDrop runs when the mouse is released.
+    function utility:MakeDraggable(handles, getPos, setPos, onDrop)
+        local state = {dragging = false}
+
+        local function begin(mouse)
+            state.dragging = true
+            state.mouseStart = mouse
+            state.objStart = getPos()
+        end
+
+        function state:AddHandle(handle)
+            utility:Connection(handle.MouseButton1Down, begin)
+        end
+
+        for _, handle in ipairs(handles) do
+            state:AddHandle(handle)
+        end
+
+        utility:Connection(library.mousemove, function(mouse)
+            if state.dragging then
+                local screen = workspace.CurrentCamera.ViewportSize
+                local p = state.objStart + (mouse - state.mouseStart)
+                -- keep it on screen
+                setPos(newVector2(clamp(p.X, 0, math.max(screen.X - 20, 0)), clamp(p.Y, 0, math.max(screen.Y - 10, 0))))
+            end
+        end)
+
+        utility:Connection(library.button1up, function()
+            if state.dragging then
+                state.dragging = false
+                if onDrop then
+                    onDrop()
+                end
+            end
+        end)
+
+        return state
+    end
+
     function utility:MouseOver(obj)
         local mousePos = inputservice:GetMouseLocation();
         local x1 = obj.Position.X
@@ -1631,6 +1671,17 @@ function library:init()
         end
         --------------------
 
+        -- drag it around while the menu is open (value rows are added as handles in AddValue)
+        indicator.drag = utility:MakeDraggable({indicator.objects.background, indicator.objects.topborder}, function()
+            return indicator.objects.background.Object.Position
+        end, function(p)
+            indicator:SetPosition(newUDim2(0, p.X, 0, p.Y))
+        end, function()
+            if indicator.onMoved then
+                indicator.onMoved(indicator.position)
+            end
+        end)
+
         function indicator:Update()
             local xSize  = 125
             local yPos  = 0
@@ -1681,6 +1732,7 @@ function library:init()
                     ZIndex = z;
                     Parent = indicator.objects.background;
                 })
+                indicator.drag:AddHandle(objs.background) -- rows drag the whole indicator too
     
                 objs.border1 = utility:Draw('Square', {
                     Size = newUDim2(1,2,1,2);
@@ -5573,10 +5625,27 @@ function library:init()
                 {'00:00:00', true},
                 {'M, D, Y', true},
             };
-            lock = 'custom';
+            -- nil = default spot (very top, centered). otherwise Vector2(centerX, topY) set by dragging,
+            -- stored as the center so the watermark stays put while its text width changes
+            anchor = nil;
             position = newUDim2(0,0,0,0);
             refreshrate = 25;
         }
+
+        function self.watermark:ApplyPosition()
+            local size = self.objects.background.Object.Size;
+            local screensize = workspace.CurrentCamera.ViewportSize;
+            local anchor = self.anchor or newVector2(screensize.X / 2, 4);
+            local x = clamp(anchor.X - size.X / 2, 0, math.max(screensize.X - size.X, 0));
+            local y = clamp(anchor.Y, 0, math.max(screensize.Y - size.Y, 0));
+            self.position = newUDim2(0, floor(x), 0, floor(y));
+            self.objects.background.Position = self.position;
+        end
+
+        function self.watermark:SetAnchor(anchor)
+            self.anchor = typeof(anchor) == 'Vector2' and anchor or nil;
+            self:ApplyPosition();
+        end
 
         function self.watermark:Update()
             self.objects.background.Visible = library.flags.watermark_enabled == true
@@ -5601,19 +5670,10 @@ function library:init()
                 self.objects.text.Text = table.concat(text,' | ')
                 self.objects.background.Size = newUDim2(0, self.objects.text.TextBounds.X + 10, 0, 17)
 
-                local size = self.objects.background.Object.Size;
-                local screensize = workspace.CurrentCamera.ViewportSize;
-
-                self.position = (
-                    self.lock == 'Top Right' and newUDim2(0, screensize.X - size.X - 15, 0, 15) or
-                    self.lock == 'Top Left' and newUDim2(0, 15, 0, 15) or
-                    self.lock == 'Bottom Right' and newUDim2(0, screensize.X - size.X - 15, 0, screensize.Y - size.Y - 15) or
-                    self.lock == 'Bottom Left' and newUDim2(0, 15, 0, screensize.Y - size.Y - 15) or
-                    self.lock == 'Top' and newUDim2(0, screensize.X / 2 - size.X / 2, 0, 15) or
-                    newUDim2((tonumber(library.flags.watermark_x) or 0) / 100, 0, (tonumber(library.flags.watermark_y) or 0) / 100, 0)
-                )
-
-                self.objects.background.Position = self.position
+                -- don't fight the mouse while it's being dragged
+                if not (self.drag and self.drag.dragging) then
+                    self:ApplyPosition()
+                end
             end
         end
 
@@ -5664,6 +5724,20 @@ function library:init()
                 Parent = objs.background;
             })
 
+            -- drag it anywhere while the menu is open
+            local watermark = self.watermark
+            watermark.drag = utility:MakeDraggable({objs.background, objs.topbar}, function()
+                return objs.background.Object.Position
+            end, function(p)
+                local size = objs.background.Object.Size
+                watermark.anchor = newVector2(p.X + size.X / 2, p.Y)
+                watermark:ApplyPosition()
+            end, function()
+                if watermark.onMoved then
+                    watermark.onMoved(watermark.anchor)
+                end
+            end)
+
         end
     end
 
@@ -5687,14 +5761,81 @@ function library:init()
         end
     end)
 
-    self.keyIndicator = self.NewIndicator({title = 'Keybinds', position = newUDim2(0,15,0,325), enabled = false});
+    -- default spots: keybinds on the left edge around 40% down the screen, target info under it
+    local defaultPositions = {
+        keybinds = newUDim2(0, 12, .4, 0),
+        target = newUDim2(0, 12, .62, 0),
+    }
+
+    self.keyIndicator = self.NewIndicator({title = 'Keybinds', position = defaultPositions.keybinds, enabled = false});
     
-    self.targetIndicator = self.NewIndicator({title = 'Target Info', position = newUDim2(0,15,0,350), enabled = false});
+    self.targetIndicator = self.NewIndicator({title = 'Target Info', position = defaultPositions.target, enabled = false});
     self.targetName = self.targetIndicator:AddValue({key = 'Name     :', value = 'nil'})
     self.targetDisplay = self.targetIndicator:AddValue({key = 'DName    :', value = 'nil'})
     self.targetHealth = self.targetIndicator:AddValue({key = 'Health   :', value = '0'})
     self.targetDistance = self.targetIndicator:AddValue({key = 'Distance :', value = '0m'})
     self.targetTool = self.targetIndicator:AddValue({key = 'Weapon   :', value = 'nil'})
+
+    -- // Layout
+    -- dragged positions of the watermark and indicators are remembered between sessions
+    -- (one file for every game, since it's about your screen, not the game)
+    local layoutPath = self.cheatname..'/layout.json'
+    local layoutIndicators = {
+        keybinds = self.keyIndicator,
+        target = self.targetIndicator,
+    }
+
+    function self:SaveLayout()
+        if not writefile then return end
+        local data = {}
+        if self.watermark.anchor then
+            data.watermark = {self.watermark.anchor.X, self.watermark.anchor.Y}
+        end
+        for name, indicator in next, layoutIndicators do
+            if indicator.moved then
+                data[name] = {indicator.position.X.Offset, indicator.position.Y.Offset}
+            end
+        end
+        pcall(writefile, layoutPath, http:JSONEncode(data))
+    end
+
+    function self:ResetLayout()
+        self.watermark:SetAnchor(nil)
+        for name, indicator in next, layoutIndicators do
+            indicator.moved = false
+            indicator:SetPosition(defaultPositions[name])
+        end
+        if delfile and isfile and isfile(layoutPath) then
+            pcall(delfile, layoutPath)
+        end
+    end
+
+    self.watermark.onMoved = function()
+        self:SaveLayout()
+    end
+    for _, indicator in next, layoutIndicators do
+        indicator.onMoved = function()
+            indicator.moved = true
+            self:SaveLayout()
+        end
+    end
+
+    -- restore the saved layout
+    if isfile and readfile and isfile(layoutPath) then
+        pcall(function()
+            local data = http:JSONDecode(readfile(layoutPath))
+            if typeof(data.watermark) == 'table' then
+                self.watermark.anchor = newVector2(tonumber(data.watermark[1]) or 0, tonumber(data.watermark[2]) or 0)
+            end
+            for name, indicator in next, layoutIndicators do
+                local p = data[name]
+                if typeof(p) == 'table' then
+                    indicator.moved = true
+                    indicator:SetPosition(newUDim2(0, tonumber(p[1]) or 0, 0, tonumber(p[2]) or 0))
+                end
+            end
+        end)
+    end
 
     self:SetTheme(library.theme);
     self:SetOpen(true);
@@ -5776,8 +5917,55 @@ function library:CreateSettingsTab(menu)
         if library:GetConfig(name) and delfile then
             delfile(configFolder..'/'..name..self.fileext);
             refreshConfigs()
+            if library:GetAutoload() == name then
+                library:SetAutoload(nil)
+            end
             library:SendNotification('Deleted config: '..name, 5, c3new(0,1,0));
         end
+    end})
+
+    -- // Autoload
+    -- the chosen config name is stored per game and loaded automatically next time the script runs
+    local autoloadPath = self.cheatname..'/'..self.gamename..'/autoload.txt'
+    local autoloadLabel
+
+    function library:GetAutoload()
+        if isfile and readfile and isfile(autoloadPath) then
+            local ok, name = pcall(readfile, autoloadPath)
+            if ok and typeof(name) == 'string' and name ~= '' then
+                return name
+            end
+        end
+        return nil
+    end
+
+    function library:SetAutoload(name)
+        if name then
+            if writefile then
+                pcall(writefile, autoloadPath, name)
+            end
+        elseif delfile and isfile and isfile(autoloadPath) then
+            pcall(delfile, autoloadPath)
+        end
+        if autoloadLabel then
+            autoloadLabel:SetText('Autoload: '..(name or 'none'))
+        end
+    end
+
+    configSection:AddSeparator({text = 'Autoload'})
+    autoloadLabel = configSection:AddText({text = 'Autoload: '..(library:GetAutoload() or 'none')})
+
+    configSection:AddButton({text = 'Set Autoload', callback = function()
+        local name = library.flags.selectedconfig
+        if not library:GetConfig(name) then
+            library:SendNotification('Select a config to autoload first.', 5, c3new(1,0,0));
+            return
+        end
+        library:SetAutoload(name)
+        library:SendNotification('Autoload set to: '..name, 5, c3new(0,1,0));
+    end}):AddButton({text = 'Clear Autoload', callback = function()
+        library:SetAutoload(nil)
+        library:SendNotification('Autoload cleared.', 5);
     end})
 
     refreshConfigs()
@@ -5803,7 +5991,7 @@ function library:CreateSettingsTab(menu)
 
     mainSection:AddButton({text = 'Join Discord', flag = 'joindiscord', confirm = true, callback = function()
         if not httpRequest then
-            setclip('discord.gg/seU6gab')
+            setclip('discord.gg/zPyX4BZH9q')
             library:SendNotification('Executor has no request function, invite copied instead.', 5);
             return
         end
@@ -5817,7 +6005,7 @@ function library:CreateSettingsTab(menu)
             Body = game:GetService('HttpService'):JSONEncode({
                 cmd = 'INVITE_BROWSER',
                 nonce = game:GetService('HttpService'):GenerateGUID(false),
-                args = {code = 'seU6gab'}
+                args = {code = 'zPyX4BZH9q'}
             })
         })
         if ok and typeof(res) == 'table' and res.Success then
@@ -5826,7 +6014,9 @@ function library:CreateSettingsTab(menu)
     end})
     
     mainSection:AddButton({text = 'Copy Discord', flag = 'copydiscord', callback = function()
-        setclip('discord.gg/seU6gab')
+        if setclip('discord.gg/zPyX4BZH9q') then
+            library:SendNotification('Discord invite copied.', 3);
+        end
     end})
 
     mainSection:AddButton({text = 'Rejoin Server', confirm = true, callback = function()
@@ -5850,23 +6040,16 @@ function library:CreateSettingsTab(menu)
     end})
 
     mainSection:AddSeparator({text = 'Keybinds'});
-    mainSection:AddToggle({text = 'Keybind Indicator', flag = 'keybind_indicator', callback = function(bool)
+    -- the keybind list and watermark are dragged into place with the mouse while the menu is open
+    mainSection:AddSeparator({text = 'Overlay'});
+    mainSection:AddToggle({text = 'Keybind Indicator', flag = 'keybind_indicator', tooltip = 'Drag it anywhere while the menu is open', callback = function(bool)
         library.keyIndicator:SetEnabled(bool);
     end})
-    mainSection:AddSlider({text = 'Position X', flag = 'keybind_indicator_x', min = 0, max = 100, increment = .1, value = .5, callback = function()
-        library.keyIndicator:SetPosition(newUDim2(library.flags.keybind_indicator_x / 100, 0, library.flags.keybind_indicator_y / 100, 0));    
-    end});
-    mainSection:AddSlider({text = 'Position Y', flag = 'keybind_indicator_y', min = 0, max = 100, increment = .1, value = 35, callback = function()
-        library.keyIndicator:SetPosition(newUDim2(library.flags.keybind_indicator_x / 100, 0, library.flags.keybind_indicator_y / 100, 0));    
-    end});
-
-    mainSection:AddSeparator({text = 'Watermark'})
-    mainSection:AddToggle({text = 'Enabled', flag = 'watermark_enabled'});
-    mainSection:AddList({text = 'Position', flag = 'watermark_pos', selected = 'Custom', values = {'Top', 'Top Left', 'Top Right', 'Bottom Left', 'Bottom Right', 'Custom'}, callback = function(val)
-        library.watermark.lock = val;
+    mainSection:AddToggle({text = 'Watermark', flag = 'watermark_enabled', tooltip = 'Drag it anywhere while the menu is open'});
+    mainSection:AddButton({text = 'Reset Positions', confirm = true, callback = function()
+        library:ResetLayout()
+        library:SendNotification('Overlay positions reset.', 4);
     end})
-    mainSection:AddSlider({text = 'Custom X', flag = 'watermark_x', suffix = '%', min = 0, max = 100, increment = .1});
-    mainSection:AddSlider({text = 'Custom Y', flag = 'watermark_y', suffix = '%', min = 0, max = 100, increment = .1});
 
     local themeStrings = {"Custom"};
     for _,v in next, library.themes do
@@ -5908,6 +6091,24 @@ function library:CreateSettingsTab(menu)
                 library.options.preset_theme:Select('Custom')
             end
         end});
+    end
+
+    -- load the autoload config once everything (including the theme pickers) exists.
+    -- deferred a moment so options the script adds right after this call still get their values.
+    local autoloadName = library:GetAutoload()
+    if autoloadName then
+        task.delay(.5, function()
+            if not library.hasInit then return end -- unloaded in the meantime
+            if library:GetConfig(autoloadName) then
+                library:LoadConfig(autoloadName)
+                if table.find(library.options.selectedconfig.values, autoloadName) then
+                    library.options.selectedconfig:Select(autoloadName, true)
+                end
+            else
+                library:SendNotification('Autoload config \''..autoloadName..'\' no longer exists.', 5, c3new(1,0,0));
+                library:SetAutoload(nil)
+            end
+        end)
     end
 
     return settingsTab;
