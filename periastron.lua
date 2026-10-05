@@ -1113,6 +1113,13 @@ function library:IsTyping()
 end
 
 function library:Unload()
+    -- switch every toggle off first (with callbacks), so features stop when the menu goes away.
+    -- otherwise re-running the script leaves the old features running while the new menu shows them off
+    for _, toggle in ipairs(self.allToggles or {}) do
+        if toggle.state == true then
+            pcall(toggle.SetState, toggle, false);
+        end
+    end
     library.unloaded:Fire();
     for _,c in next, self.connections do
         pcall(function()
@@ -1805,6 +1812,228 @@ function library:init()
                 slot += 1
             end
         end
+    end
+
+    -- // Alerts
+    -- centered boxes near the top middle of the screen, styled like the menu (accent top line, borders,
+    -- countdown bar). they drop + fade in, stack downwards and rise + fade out.
+    --   library:SendAlert('Target locked', 3)
+    --   library:SendAlert('Low health!', 5, Color3.fromRGB(255, 60, 60))
+    --   local a = library:SendAlert('Loading...', 999); a:SetText('Done'); a:Dismiss()
+    self.alerts = {}
+    self.alertSettings = {
+        y = 34;          -- top of the stack (just under the default watermark spot)
+        height = 22;
+        spacing = 5;
+        minWidth = 160;
+        padding = 28;    -- horizontal space around the text
+        maxVisible = 4;
+        inTime = .35;
+        outTime = .3;
+        offset = 10;     -- how far it drops in from / rises out to
+    }
+
+    function self:UpdateAlerts()
+        local settings = self.alertSettings
+        local screen = workspace.CurrentCamera.ViewportSize
+        local slot = 0
+        for _, a in ipairs(self.alerts) do
+            if not a.removing then
+                local target = newUDim2(0, floor(screen.X / 2 - a.width / 2), 0, settings.y + slot * (settings.height + settings.spacing))
+                if a.placed then
+                    utility:Tween(a.objects.holder, 'Position', target, .3, Enum.EasingDirection.Out, Enum.EasingStyle.Quint)
+                else
+                    a.objects.holder.Position = target
+                    a.placed = true
+                end
+                slot += 1
+            end
+        end
+    end
+
+    function self:SendAlert(message, time, color)
+        time = time or 4
+        if typeof(message) ~= 'string' then
+            return error(string.format('invalid message type, got %s, expected string', typeof(message)))
+        elseif typeof(time) ~= 'number' then
+            return error(string.format('invalid time type, got %s, expected number', typeof(time)))
+        elseif color ~= nil and typeof(color) ~= 'Color3' then
+            return error(string.format('invalid color type, got %s, expected color3', typeof(color)))
+        end
+
+        local settings = self.alertSettings
+        local z = self.zindexOrder.notification
+        local height = settings.height
+
+        local alert = {
+            objects = {};
+            targets = {};
+            width = 0;
+            removing = false;
+            placed = false;
+        }
+        local objs = alert.objects
+
+        objs.holder = utility:Draw('Square', {
+            Size = newUDim2(0, 0, 0, height);
+            Transparency = 0;
+            ZIndex = z;
+            NoHit = true;
+        })
+
+        objs.background = utility:Draw('Square', {
+            Size = newUDim2(0, 200, 0, height);
+            ThemeColor = 'Background';
+            ZIndex = z;
+            NoHit = true;
+            Parent = objs.holder;
+        })
+
+        objs.border1 = utility:Draw('Square', {
+            Size = newUDim2(1,2,1,2);
+            Position = newUDim2(0,-1,0,-1);
+            ThemeColor = 'Border 1';
+            ZIndex = z-1;
+            NoHit = true;
+            Parent = objs.background;
+        })
+
+        objs.border2 = utility:Draw('Square', {
+            Size = newUDim2(1,2,1,2);
+            Position = newUDim2(0,-1,0,-1);
+            ThemeColor = 'Border 3';
+            ZIndex = z-2;
+            NoHit = true;
+            Parent = objs.border1;
+        })
+
+        objs.gradient = utility:Draw('Image', {
+            Size = newUDim2(1,0,1,0);
+            Data = self.images.gradientp90;
+            Transparency = .35;
+            ZIndex = z+1;
+            Parent = objs.background;
+        })
+
+        objs.topBar = utility:Draw('Square', {
+            Size = newUDim2(1,0,0,1);
+            ThemeColor = color == nil and 'Accent' or '';
+            ZIndex = z+3;
+            NoHit = true;
+            Parent = objs.background;
+        })
+
+        objs.text = utility:Draw('Text', {
+            Position = newUDim2(.5,0,.5,-7);
+            ThemeColor = 'Primary Text';
+            Text = message;
+            Center = true;
+            Outline = true;
+            Font = 2;
+            Size = 13;
+            ZIndex = z+4;
+            Parent = objs.background;
+        })
+
+        objs.progress = utility:Draw('Square', {
+            Size = newUDim2(1,0,0,1);
+            Position = newUDim2(0,0,1,-1);
+            ThemeColor = color == nil and 'Accent' or '';
+            ThemeColorOffset = color == nil and -60 or 0;
+            ZIndex = z+3;
+            NoHit = true;
+            Parent = objs.background;
+        })
+
+        if color then
+            objs.topBar.Color = color
+            objs.progress.Color = color
+        end
+
+        local function resize()
+            alert.width = math.max(objs.text.TextBounds.X + settings.padding, settings.minWidth)
+            objs.background.Size = newUDim2(0, alert.width, 0, height)
+        end
+        resize()
+
+        -- start invisible, a little above its spot
+        for name, obj in next, objs do
+            if name ~= 'holder' then
+                alert.targets[obj] = obj.Transparency
+                obj.Transparency = 0
+            end
+        end
+        objs.background.Position = newUDim2(0, 0, 0, -settings.offset)
+
+        local function fade(visible, duration, direction)
+            for obj, target in next, alert.targets do
+                utility:Tween(obj, 'Transparency', visible and target or 0, duration, direction, Enum.EasingStyle.Quad)
+            end
+        end
+
+        function alert:SetText(str)
+            if typeof(str) == 'string' and objs.text.Object then
+                objs.text.Text = str
+                resize()
+                library:UpdateAlerts()
+            end
+        end
+
+        function alert:Remove()
+            local idx = table.find(library.alerts, alert)
+            if idx then
+                table.remove(library.alerts, idx)
+            end
+            if objs.holder and objs.holder.Object then
+                objs.holder:Remove()
+            end
+            library:UpdateAlerts()
+        end
+
+        function alert:Dismiss()
+            if self.removing then return end
+            self.removing = true
+            library:UpdateAlerts()
+            fade(false, settings.outTime * .9, Enum.EasingDirection.In)
+            local outTween = utility:Tween(objs.background, 'Position', newUDim2(0, 0, 0, -settings.offset), settings.outTime, Enum.EasingDirection.In, Enum.EasingStyle.Quad)
+            if outTween then
+                outTween.Completed:Once(function()
+                    alert:Remove()
+                end)
+            else
+                alert:Remove()
+            end
+        end
+
+        table.insert(self.alerts, alert)
+
+        -- too many: push the oldest out early
+        local active = {}
+        for _, a in ipairs(self.alerts) do
+            if not a.removing then
+                table.insert(active, a)
+            end
+        end
+        for i = 1, #active - settings.maxVisible do
+            active[i]:Dismiss()
+        end
+
+        self:UpdateAlerts()
+
+        -- in
+        fade(true, settings.inTime, Enum.EasingDirection.Out)
+        utility:Tween(objs.background, 'Position', newUDim2(0, 0, 0, 0), settings.inTime, Enum.EasingDirection.Out, Enum.EasingStyle.Quint)
+        -- countdown bar shrinks towards the middle
+        utility:Tween(objs.progress, 'Size', newUDim2(0, 0, 0, 1), time, Enum.EasingDirection.InOut, Enum.EasingStyle.Linear)
+        utility:Tween(objs.progress, 'Position', newUDim2(.5, 0, 1, -1), time, Enum.EasingDirection.InOut, Enum.EasingStyle.Linear)
+
+        task.delay(time, function()
+            if objs.background and objs.background.Object then
+                alert:Dismiss()
+            end
+        end)
+
+        return alert
     end
 
     function self.NewIndicator(data)
@@ -4388,6 +4617,25 @@ function library:init()
                     if toggle.keybind then
                         toggle:AddKeybind(typeof(data.keybind) == 'table' and data.keybind or nil);
                     end
+
+                    -- tracked so Unload can switch everything off (see library:Unload)
+                    library.allToggles = library.allToggles or {};
+                    table.insert(library.allToggles, toggle);
+
+                    -- a toggle that starts on actually runs its callback, so the feature matches the checkmark.
+                    -- deferred so the rest of the script (other options, variables) exists first
+                    if toggle.state == true then
+                        task.defer(function()
+                            if toggle.state == true and library.hasInit and not toggle.startupFired then
+                                toggle.startupFired = true;
+                                local ok, err = pcall(toggle.callback, true);
+                                if not ok then
+                                    log('toggle callback error ('..tostring(toggle.text)..'): '..tostring(err));
+                                end
+                            end
+                        end)
+                    end
+
                     self:UpdateOptions();
                     return toggle
                 end
