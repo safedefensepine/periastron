@@ -3511,10 +3511,11 @@ function library:init()
             end
         end
 
-        function window:AddTab(text, order)
+        function window:AddTab(text, order, icon)
             local tab = {
                 text = text;
                 order = order or #self.tabs+1;
+                icon = (typeof(icon) == 'number' and math.clamp(math.floor(icon), 3, 60)) or 12;
                 callback = function() end;
                 objects = {};
                 sections = {};
@@ -3565,6 +3566,18 @@ function library:init()
                     ZIndex = z+1;
                     Outline = true;
                     Center = true;
+                    Parent = objs.background;
+                })
+
+                -- little accent glyph to the left of the tab name
+                objs.icon = utility:Draw('Circle', {
+                    NumSides = tab.icon;
+                    Radius = 4;
+                    Filled = true;
+                    Thickness = 1;
+                    ThemeColor = 'Accent';
+                    ZIndex = z+1;
+                    Position = newUDim2(0, 8, .5, 0);
                     Parent = objs.background;
                 })
 
@@ -6298,11 +6311,18 @@ function library:init()
                 local objs = v.objects;
                 v.selected = v == self.selectedTab;
                 objs.background.ThemeColor = v.selected and 'Selected Tab Background' or 'Unselected Tab Background';
-                objs.background.Size = newUDim2(0, objs.text.TextBounds.X + 14, 1, v.selected and 1 or 0);
+                local iconW = objs.icon and 13 or 0;
+                objs.background.Size = newUDim2(0, objs.text.TextBounds.X + 12 + iconW, 1, v.selected and 1 or 0);
                 objs.background.Position = newUDim2(0, pos, 0, 0)
 
                 objs.text.ThemeColor = v.selected and 'Selected Tab Text' or 'Unselected Tab Text';
-                objs.text.Position = newUDim2(.5, 0, 0, 3);
+                if objs.icon then
+                    objs.text.Center = false;
+                    objs.text.Position = newUDim2(0, iconW + 3, 0, 3);
+                else
+                    objs.text.Center = true;
+                    objs.text.Position = newUDim2(.5, 0, 0, 3);
+                end
 
                 -- the accent line is drawn by the sliding tabIndicator now
                 objs.topBorder.ThemeColor = v.selected and 'Selected Tab Background' or 'Unselected Tab Background';
