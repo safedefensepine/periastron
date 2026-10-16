@@ -271,6 +271,22 @@ local library = {
     fileext = startupArgs.fileext or '.txt';
 }
 
+-- Fetches a Twemoji PNG by codepoint (e.g. '1f3e0') for use as a tab icon.
+-- Cached; returns the raw PNG bytes or nil if it couldn't be downloaded.
+do
+    local iconCache = {}
+    function library.IconPNG(cp)
+        if iconCache[cp] ~= nil then
+            return iconCache[cp] or nil
+        end
+        local url = 'https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72/' .. tostring(cp) .. '.png'
+        local ok, data = pcall(function() return game:HttpGet(url) end)
+        local valid = (ok and type(data) == 'string' and data:sub(1, 4) == '\137PNG') and data or false
+        iconCache[cp] = valid
+        return valid or nil
+    end
+end
+
 -- animation timings (seconds). set any of these to 0 to turn that animation off
 library.animations = {
     enabled = true;   -- master switch
@@ -3515,7 +3531,7 @@ function library:init()
             local tab = {
                 text = text;
                 order = order or #self.tabs+1;
-                icon = (typeof(icon) == 'number' and math.clamp(math.floor(icon), 3, 60)) or 12;
+                icon = icon;
                 callback = function() end;
                 objects = {};
                 sections = {};
@@ -3569,17 +3585,30 @@ function library:init()
                     Parent = objs.background;
                 })
 
-                -- little accent glyph to the left of the tab name
-                objs.icon = utility:Draw('Circle', {
-                    NumSides = tab.icon;
-                    Radius = 4;
-                    Filled = true;
-                    Thickness = 1;
-                    ThemeColor = 'Accent';
-                    ZIndex = z+1;
-                    Position = newUDim2(0, 8, .5, 0);
-                    Parent = objs.background;
-                })
+                -- icon to the left of the tab name.
+                -- string starting with the PNG magic bytes -> real image icon;
+                -- a number -> a simple accent polygon glyph fallback.
+                if type(tab.icon) == 'string' and tab.icon:sub(1, 4) == '\137PNG' then
+                    objs.icon = utility:Draw('Image', {
+                        Size = newUDim2(0, 12, 0, 12);
+                        Data = tab.icon;
+                        ZIndex = z+1;
+                        Position = newUDim2(0, 4, .5, -6);
+                        Parent = objs.background;
+                    })
+                else
+                    local sides = (type(tab.icon) == 'number' and math.clamp(math.floor(tab.icon), 3, 60)) or 12
+                    objs.icon = utility:Draw('Circle', {
+                        NumSides = sides;
+                        Radius = 4;
+                        Filled = true;
+                        Thickness = 1;
+                        ThemeColor = 'Accent';
+                        ZIndex = z+1;
+                        Position = newUDim2(0, 9, .5, 0);
+                        Parent = objs.background;
+                    })
+                end
 
                 utility:Connection(objs.background.MouseButton1Down, function()
                     tab:Select();
@@ -6311,7 +6340,8 @@ function library:init()
                 local objs = v.objects;
                 v.selected = v == self.selectedTab;
                 objs.background.ThemeColor = v.selected and 'Selected Tab Background' or 'Unselected Tab Background';
-                local iconW = objs.icon and 13 or 0;
+                local iconW = 0;
+                if objs.icon then iconW = (objs.icon.Class == 'Image') and 15 or 13 end
                 objs.background.Size = newUDim2(0, objs.text.TextBounds.X + 12 + iconW, 1, v.selected and 1 or 0);
                 objs.background.Position = newUDim2(0, pos, 0, 0)
 
@@ -6643,7 +6673,7 @@ function library:init()
 end
 
 function library:CreateSettingsTab(menu)
-    local settingsTab = menu:AddTab('Settings', 999);
+    local settingsTab = menu:AddTab('Settings', 999, library.IconPNG('2699'));
     local configSection = settingsTab:AddSection('Config', 2);
     local mainSection = settingsTab:AddSection('Main', 1);
 
@@ -6854,7 +6884,7 @@ function library:CreateSettingsTab(menu)
     for _,v in next, library.themes do
         table.insert(themeStrings, v.name)
     end
-    local themeTab = menu:AddTab('Theme', 990);
+    local themeTab = menu:AddTab('Theme', 990, library.IconPNG('1f3a8'));
     local themeSection = themeTab:AddSection('Theme', 1);
     local setByPreset = false
 
