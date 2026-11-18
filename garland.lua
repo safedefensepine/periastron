@@ -345,6 +345,41 @@ library.lightPalettes = {
 }
 library.lightPaletteNames = {'classic', 'tree', 'warm', 'frost', 'candy', 'theme', 'rainbow'}
 
+-- // Backdrop: a big tilted word drawn behind the sections, in the middle of the content panel
+-- (can be changed at runtime, or from the Backdrop section in the Theme tab)
+library.backdrop = {
+    enabled = true;
+    text = 'swag';        -- letters available: see library.backdropGlyphs (add your own there)
+    angle = 30;           -- degrees, rising from bottom left to top right
+    opacity = .09;        -- how strongly it shows (0 = invisible, 1 = full accent color)
+    color = 'Accent';     -- theme color it's tinted with
+    size = .8;            -- how much of the content panel it fills (0 - 1)
+    weight = .17;         -- stroke thickness, relative to the letter height
+}
+
+-- letter shapes for the backdrop, as strokes in "em" units: x to the right, y up from the baseline,
+-- 1 = lowercase letter height (descenders go below 0). each glyph has a width and a list of strokes;
+-- a stroke is either {'line', {x,y}, {x,y}, ...} or {'arc', cx, cy, rx, ry, fromDeg, toDeg}.
+library.backdropGlyphs = {
+    s = {width = .56, strokes = {
+        {'arc', .28, .75, .27, .25, 25, 270},
+        {'arc', .28, .25, .27, .25, 90, -155},
+    }},
+    w = {width = .8, strokes = {
+        {'line', {0, 1}, {.2, 0}, {.4, .72}, {.6, 0}, {.8, 1}},
+    }},
+    a = {width = .6, strokes = {
+        {'arc', .3, .5, .3, .5, 0, 360},
+        {'line', {.6, 1}, {.6, 0}},
+    }},
+    g = {width = .6, strokes = {
+        {'arc', .3, .5, .3, .5, 0, 360},
+        {'line', {.6, 1}, {.6, -.15}},
+        {'arc', .3, -.15, .3, .3, 0, -160},
+    }},
+    [' '] = {width = .4, strokes = {}},
+}
+
 library.themes = {
     {
         name = 'Evergreen',
@@ -2823,6 +2858,179 @@ function library:init()
         end)
         if not lightsOk then
             log('window lights disabled: '..tostring(lightsErr))
+        end
+        -------------------------
+
+        ---- Backdrop word ----
+        -- A big word (library.backdrop.text) drawn tilted in the middle of the content panel, above the
+        -- panel's background but below the sections, so it shows through the gaps like a watermark.
+        -- Drawing text can't rotate, so the letters are built from thick rounded strokes
+        -- (library.backdropGlyphs) that are rotated by hand. They're drawn fully opaque in a color mixed
+        -- from the panel background and the accent, so overlapping strokes never look darker.
+        -- Only recalculated when the window moves, the theme or a backdrop setting changes.
+        local backdropOk, backdropErr = pcall(function()
+            local cfg = library.backdrop
+            local objs = window.objects
+            local panel = objs.groupBackground
+            local z = library.zindexOrder.window + 6 -- above the panel (z+5), below the sections (z+15)
+
+            local lines, dots = {}, {}
+            local shapeKey, shape = nil, nil -- strokes of the current text in em units
+            local lastKey = nil
+            local broken = false
+            local shown = false
+            local wasOpen, openedAt, closedAt = false, 0, -10
+
+            -- turns the text into line segments + joint points (em units), plus its size
+            local function buildShape(text)
+                local segs, points = {}, {}
+                local x = 0
+                local gap = .18
+                local first = true
+                for ch in tostring(text):lower():gmatch('.') do
+                    local glyph = library.backdropGlyphs[ch]
+                    if glyph then
+                        if not first then x += gap end
+                        first = false
+                        for _, stroke in ipairs(glyph.strokes) do
+                            local pts = {}
+                            if stroke[1] == 'line' then
+                                for i = 2, #stroke do
+                                    pts[#pts + 1] = {x + stroke[i][1], stroke[i][2]}
+                                end
+                            elseif stroke[1] == 'arc' then
+                                local cx, cy, rx, ry, a0, a1 = stroke[2], stroke[3], stroke[4], stroke[5], stroke[6], stroke[7]
+                                local steps = math.max(floor(math.abs(a1 - a0) / 12 + .5), 2)
+                                for i = 0, steps do
+                                    local a = math.rad(a0 + (a1 - a0) * i / steps)
+                                    pts[#pts + 1] = {x + cx + rx * math.cos(a), cy + ry * math.sin(a)}
+                                end
+                            end
+                            for i = 1, #pts do
+                                points[#points + 1] = pts[i]
+                                if i > 1 then
+                                    segs[#segs + 1] = {pts[i - 1], pts[i]}
+                                end
+                            end
+                        end
+                        x += glyph.width
+                    end
+                end
+                return {segs = segs, points = points, width = math.max(x, .01), top = 1, bottom = -.45}
+            end
+
+            local function setShown(drawing, visible)
+                if drawing.Visible ~= visible then
+                    drawing.Visible = visible
+                end
+            end
+
+            local function hideAll()
+                for _, l in ipairs(lines) do setShown(l, false) end
+                for _, d in ipairs(dots) do setShown(d, false) end
+                shown = false
+            end
+
+            local function update(now, panelData)
+                if window.open and not wasOpen then
+                    wasOpen, openedAt = true, now
+                elseif not window.open and wasOpen then
+                    wasOpen, closedAt = false, now
+                end
+                local alpha = window.open and clamp((now - openedAt) / .2, 0, 1) or (1 - clamp((now - closedAt) / .18, 0, 1))
+
+                if not cfg.enabled or alpha <= 0 or tostring(cfg.text or '') == '' then
+                    if shown then hideAll() end
+                    lastKey = nil
+                    return
+                end
+
+                local base = library.theme['Group Background'] or c3new(0, 0, 0)
+                local tint = library.theme[cfg.color] or library.theme['Accent'] or c3new(1, 1, 1)
+                local color = base:Lerp(tint, clamp(tonumber(cfg.opacity) or .09, 0, 1))
+
+                local pos, size = panelData.AbsolutePosition, panelData.AbsoluteSize
+                local key = table.concat({tostring(pos), tostring(size), tostring(cfg.text), tostring(cfg.angle),
+                    tostring(cfg.size), tostring(cfg.weight), tostring(color), tostring(alpha)}, '|')
+                if key == lastKey then return end
+                lastKey = key
+
+                if shapeKey ~= cfg.text then
+                    shapeKey = cfg.text
+                    shape = buildShape(cfg.text)
+                end
+
+                -- scale so the tilted word fits inside the panel
+                local angle = math.rad(tonumber(cfg.angle) or 30)
+                local cos, sin = math.cos(angle), math.sin(angle)
+                local w, h = shape.width, shape.top - shape.bottom
+                local fill = clamp(tonumber(cfg.size) or .8, .1, 1)
+                local scale = math.min(
+                    size.X * fill / (w * cos + h * sin),
+                    size.Y * fill / (w * sin + h * cos)
+                )
+                local thick = math.max((tonumber(cfg.weight) or .17) * scale, 1)
+                local center = pos + size / 2
+                local midX, midY = w / 2, (shape.top + shape.bottom) / 2
+
+                -- em point -> screen point (rotated so the word rises to the right)
+                local function toScreen(p)
+                    local vx, vy = (p[1] - midX) * scale, -(p[2] - midY) * scale
+                    return center + newVector2(vx * cos + vy * sin, -vx * sin + vy * cos)
+                end
+
+                local segs, points = shape.segs, shape.points
+                while #lines < #segs do
+                    table.insert(lines, utility:Draw('Line', {Thickness = 1, Transparency = 1, Visible = false, ZIndex = z}))
+                end
+                while #dots < #points do
+                    table.insert(dots, utility:Draw('Circle', {Filled = true, NumSides = 16, Radius = 1, Transparency = 1, Visible = false, ZIndex = z}))
+                end
+
+                for i, l in ipairs(lines) do
+                    local seg = segs[i]
+                    setShown(l, seg ~= nil)
+                    if seg then
+                        local raw = l.Object
+                        raw.From = toScreen(seg[1])
+                        raw.To = toScreen(seg[2])
+                        raw.Thickness = thick
+                        raw.Color = color
+                        raw.Transparency = alpha
+                    end
+                end
+                -- round caps / joints so the strokes look smooth
+                for i, d in ipairs(dots) do
+                    local p = points[i]
+                    setShown(d, p ~= nil)
+                    if p then
+                        local raw = d.Object
+                        raw.Position = toScreen(p)
+                        raw.Radius = thick / 2
+                        raw.Color = color
+                        raw.Transparency = alpha
+                    end
+                end
+                shown = true
+            end
+
+            utility:Connection(runservice.RenderStepped, function()
+                if broken then return end
+                local panelData = panel.Object and library.drawings[panel.Object]
+                if not panelData then return end -- unloaded
+                local now = os.clock()
+                -- nothing to do while closed and already hidden
+                if not window.open and not wasOpen and not shown then return end
+                local ok, err = pcall(update, now, panelData)
+                if not ok then
+                    broken = true
+                    pcall(hideAll)
+                    log('backdrop stopped: '..tostring(err))
+                end
+            end)
+        end)
+        if not backdropOk then
+            log('backdrop disabled: '..tostring(backdropErr))
         end
         -------------------------
 
@@ -7033,7 +7241,7 @@ function library:CreateSettingsTab(menu)
 
     -- // Lights: every setting of the garland, saved with configs like any other option
     local lights = library.lights
-    local lightsTab = menu:AddTab('Lights', 995, library.IconPNG('1f384'));
+    local lightsTab = menu:AddTab('Effects', 995, library.IconPNG('1f384'));
     local lightsSection = lightsTab:AddSection('Strand', 1);
     local lookSection = lightsTab:AddSection('Look', 2);
 
@@ -7072,6 +7280,26 @@ function library:CreateSettingsTab(menu)
     end})
     lightsSection:AddToggle({text = 'Shadow', flag = 'lights_shadow', state = lights.shadow, callback = function(bool)
         lights.shadow = bool
+    end})
+
+    -- // Backdrop: the big tilted word behind the sections
+    local backdrop = library.backdrop
+    local backdropSection = lightsTab:AddSection('Backdrop', 1);
+
+    backdropSection:AddToggle({text = 'Show Backdrop', flag = 'backdrop_enabled', state = backdrop.enabled, callback = function(bool)
+        backdrop.enabled = bool
+    end})
+    backdropSection:AddBox({text = 'Word', flag = 'backdrop_text', input = backdrop.text, callback = function(text)
+        backdrop.text = text
+    end})
+    backdropSection:AddSlider({text = 'Strength', flag = 'backdrop_opacity', min = 0, max = .5, value = backdrop.opacity, increment = .01, callback = function(v)
+        backdrop.opacity = v
+    end})
+    backdropSection:AddSlider({text = 'Tilt', flag = 'backdrop_angle', min = -60, max = 60, value = backdrop.angle, increment = 1, suffix = ' deg', callback = function(v)
+        backdrop.angle = v
+    end})
+    backdropSection:AddSlider({text = 'Size', flag = 'backdrop_size', min = .3, max = 1, value = backdrop.size, increment = .05, callback = function(v)
+        backdrop.size = v
     end})
 
     -- load the autoload config once everything (including the theme pickers) exists.
