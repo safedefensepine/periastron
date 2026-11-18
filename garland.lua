@@ -7,11 +7,14 @@
         one bulb along at a time, so the strand looks like it's moving (classic chasing lights)
       * clean, flat look: title bar + vertical sidebar tabs + content panel, section cards,
         switch-style toggles, sliders with a knob, bigger controls, festive theme presets
+      * a big tilted "swag" on the content panel behind the sections, the dog picture at the
+        bottom of the sidebar and the discord invite (click to copy) under it - all always on
       * uses the game's normal mouse while the menu is open (no drawn cursor)
 
     same api as periastron (library:init, NewWindow, AddTab, AddSection, AddToggle, ...),
-    so existing scripts keep working. everything about the lights lives in library.lights
-    and can be changed at runtime (or from the "Lights" tab that CreateSettingsTab adds).
+    so existing scripts keep working. players can only change the light colors and direction
+    (Effects tab that CreateSettingsTab adds); the fixed look lives in library.lights,
+    library.backdrop, library.mascot and library.discord.
 ]]
 
 -- // Load
@@ -314,13 +317,13 @@ library.animations = {
     indicator = .25;  -- sliding tab underline
 }
 
--- // String lights: a garland hanging across the top of the window
--- (can be changed at runtime, or from the Lights section in the Theme tab).
--- set enabled = false BEFORE creating the window to also drop the strip the lights hang in.
+-- // String lights: a garland hanging across the top of the window. always on.
+-- the only things players can change (Effects tab) are the colors and the direction;
+-- everything else here is the fixed look, tweak it in code if you want.
 library.lights = {
-    enabled = true;       -- master switch
-    palette = 'classic';  -- classic, tree, warm, frost, candy, theme, rainbow (see library.lightPalettes)
-    colorStep = .45;      -- seconds between the colors switching one bulb along (this is what makes it look like it moves, 0 = still)
+    enabled = true;       -- always on (kept for the drawing code, not exposed in the menu)
+    palette = 'frost';    -- classic, tree, warm, frost, candy, theme, rainbow (see library.lightPalettes)
+    colorStep = .55;      -- seconds between the colors switching one bulb along (this is what makes it look like it moves)
     reverse = false;      -- run the colors the other way
     swag = 84;            -- width of one drape of wire, hook to hook (pixels)
     sag = 9;              -- how deep each drape hangs
@@ -334,7 +337,7 @@ library.lights = {
     fps = 40;             -- how often the lights update (lower = cheaper)
 }
 
--- bulb colors, used in order around the strand.
+-- bulb colors, used in order along the strand.
 -- 'theme' (shades of the accent color) and 'rainbow' (six hues) are generated on the fly.
 library.lightPalettes = {
     classic = {fromrgb(255,58,58), fromrgb(60,220,95), fromrgb(255,196,48), fromrgb(64,140,255), fromrgb(236,88,255)};
@@ -345,10 +348,9 @@ library.lightPalettes = {
 }
 library.lightPaletteNames = {'classic', 'tree', 'warm', 'frost', 'candy', 'theme', 'rainbow'}
 
--- // Backdrop: a big tilted word drawn behind the sections, in the middle of the content panel
--- (can be changed at runtime, or from the Backdrop section in the Theme tab)
+-- // Backdrop: the big tilted word on the content panel, behind the sections. always on.
 library.backdrop = {
-    enabled = true;
+    enabled = true;       -- always on (kept for the drawing code, not exposed in the menu)
     text = 'swag';        -- letters available: see library.backdropGlyphs (add your own there)
     angle = 30;           -- degrees, rising from bottom left to top right
     opacity = .09;        -- how strongly it shows (0 = invisible, 1 = full accent color)
@@ -357,18 +359,14 @@ library.backdrop = {
     weight = .17;         -- stroke thickness, relative to the letter height
 }
 
--- // Mascot: a picture at the bottom of the sidebar, loaded from a Roblox decal / image id
+-- // Mascot: the dog picture at the bottom of the sidebar. always shown.
 library.mascot = {
-    enabled = true;
-    id = 1078702426;      -- any decal or image asset id (see library.mascotPresets)
+    id = 6500411559;      -- the dog (a Roblox decal id)
     size = 84;            -- pixels (square)
 }
 
-library.mascotPresets = {
-    {name = 'Cool Emoji',   id = 1078702426};
-    {name = 'Glasses Face', id = 963317680};
-    {name = 'Dog',          id = 6500411559};
-}
+-- // Discord invite shown at the bottom of the sidebar (click it to copy) and used by the Settings buttons
+library.discord = 'discord.gg/privateworld'
 
 -- Downloads a Roblox decal/image as PNG bytes for Drawing images (Drawing can't use rbxassetid://).
 -- Uses the public thumbnails api (no login needed), caches to <cheatname>/assets/rbx_<id>.png.
@@ -2394,7 +2392,7 @@ function library:init()
 
     function self.NewWindow(data)
         local window = {
-            title = data.title or '',
+            title = data.title or 'Elapse Christmas V1',
             selectedTab = nil;
             tabs = {},
             objects = {},
@@ -2419,7 +2417,7 @@ function library:init()
         local GARLAND_H = library.lights.enabled and 22 or 0
         local TITLE_H = 34 + GARLAND_H
         local TITLE_Y = GARLAND_H + 10 -- where the title text sits
-        local SIDEBAR_W = tonumber(data.sidebarWidth) or 140
+        local SIDEBAR_W = tonumber(data.sidebarWidth) or 176 -- wide enough for the discord invite
         window.titleHeight, window.sidebarWidth = TITLE_H, SIDEBAR_W
         do
             local size = data.size or newUDim2(0, 700, 0, 640);
@@ -2518,10 +2516,10 @@ function library:init()
                 Parent = objs.sidebar;
             })
 
-            -- room for the mascot picture at the bottom of the sidebar
+            -- room for the dog picture at the bottom of the sidebar (always shown)
             local mascotCfg = library.mascot
             local mascotSize = tonumber(mascotCfg.size) or 84
-            local mascotRoom = mascotCfg.enabled and (mascotSize + 10) or 0
+            local mascotRoom = mascotSize + 10
 
             objs.tabHolder = utility:Draw('Square', {
                 Size = newUDim2(1,-16,1,-44 - mascotRoom);
@@ -2540,10 +2538,11 @@ function library:init()
                 Parent = objs.tabHolder;
             })
 
+            -- discord invite at the bottom left; click it to copy
             objs.sidebarFooter = utility:Draw('Text', {
                 Position = newUDim2(0,12,1,-22);
                 ThemeColor = 'Unselected Tab Text';
-                Text = tostring(data.footer or library.cheatname);
+                Text = tostring(data.footer or library.discord);
                 Font = 2;
                 Size = 13;
                 ZIndex = z+3;
@@ -2551,39 +2550,40 @@ function library:init()
                 Parent = objs.sidebar;
             })
 
-            -- // Mascot picture (downloaded in the background, shows up once it's loaded)
+            objs.sidebarFooterButton = utility:Draw('Square', {
+                Size = newUDim2(1,-12,0,20);
+                Position = newUDim2(0,6,1,-25);
+                Transparency = 0;
+                ZIndex = z+4;
+                Parent = objs.sidebar;
+            })
+
+            utility:Connection(objs.sidebarFooterButton.MouseEnter, function()
+                objs.sidebarFooter.ThemeColor = 'Accent';
+            end)
+            utility:Connection(objs.sidebarFooterButton.MouseLeave, function()
+                objs.sidebarFooter.ThemeColor = 'Unselected Tab Text';
+            end)
+            utility:Connection(objs.sidebarFooterButton.MouseButton1Down, function()
+                if setclip(objs.sidebarFooter.Text) then
+                    library:SendNotification('Discord invite copied: '..objs.sidebarFooter.Text, 3);
+                end
+            end)
+
+            -- // Dog picture (downloaded in the background, shows up once it's loaded)
             objs.mascot = utility:Draw('Image', {
                 Size = newUDim2(0,mascotSize,0,mascotSize);
                 Position = newUDim2(.5,-mascotSize/2,1,-(mascotSize + 30));
-                Visible = mascotCfg.enabled and true or false;
                 ZIndex = z+3;
                 Parent = objs.sidebar;
             })
 
-            -- window:SetMascot(id) swaps the picture (any decal / image id), nil or false hides it
-            local mascotRequest = 0
-            function window:SetMascot(id)
-                mascotRequest += 1
-                local request = mascotRequest
-                window.mascotId = id
-                if not id then
-                    objs.mascot.Visible = false
-                    return
+            task.spawn(function()
+                local bytes = library.RobloxImage(mascotCfg.id)
+                if bytes and objs.mascot.Object ~= nil then -- still loaded
+                    objs.mascot.Data = bytes
                 end
-                task.spawn(function()
-                    local bytes = library.RobloxImage(id)
-                    -- ignore it if another picture was asked for meanwhile, or the menu was unloaded
-                    if request ~= mascotRequest or objs.mascot.Object == nil then return end
-                    if bytes then
-                        objs.mascot.Data = bytes
-                        objs.mascot.Visible = true
-                    end
-                end)
-            end
-
-            if mascotCfg.enabled then
-                window:SetMascot(data.mascot or mascotCfg.id)
-            end
+            end)
 
             -- // Content panel
             objs.groupBackground = utility:Draw('Square', {
@@ -7238,7 +7238,7 @@ function library:CreateSettingsTab(menu)
 
     mainSection:AddButton({text = 'Join Discord', flag = 'joindiscord', confirm = true, callback = function()
         if not httpRequest then
-            setclip('discord.gg/zPyX4BZH9q')
+            setclip(library.discord)
             library:SendNotification('Executor has no request function, invite copied instead.', 5);
             return
         end
@@ -7252,7 +7252,7 @@ function library:CreateSettingsTab(menu)
             Body = game:GetService('HttpService'):JSONEncode({
                 cmd = 'INVITE_BROWSER',
                 nonce = game:GetService('HttpService'):GenerateGUID(false),
-                args = {code = 'zPyX4BZH9q'}
+                args = {code = (tostring(library.discord):match('([%w%-_]+)$') or library.discord)}
             })
         })
         if ok and typeof(res) == 'table' and res.Success then
@@ -7261,7 +7261,7 @@ function library:CreateSettingsTab(menu)
     end})
     
     mainSection:AddButton({text = 'Copy Discord', flag = 'copydiscord', callback = function()
-        if setclip('discord.gg/zPyX4BZH9q') then
+        if setclip(library.discord) then
             library:SendNotification('Discord invite copied.', 3);
         end
     end})
@@ -7346,86 +7346,18 @@ function library:CreateSettingsTab(menu)
         end});
     end
 
-    -- // Lights: every setting of the garland, saved with configs like any other option
+    -- // Effects: the lights, the swag backdrop and the dog are always on.
+    -- the only things players can change are the light colors and which way they run.
     local lights = library.lights
-    local lightsTab = menu:AddTab('Effects', 995, library.IconPNG('1f384'));
-    local lightsSection = lightsTab:AddSection('Strand', 1);
-    local lookSection = lightsTab:AddSection('Look', 2);
+    local effectsTab = menu:AddTab('Effects', 995, library.IconPNG('1f384'));
+    local lightsSection = effectsTab:AddSection('Lights', 1);
 
-    lightsSection:AddToggle({text = 'String Lights', flag = 'lights_enabled', state = lights.enabled, callback = function(bool)
-        lights.enabled = bool
-    end})
     lightsSection:AddList({text = 'Colors', flag = 'lights_palette', values = library.lightPaletteNames, callback = function(name)
         lights.palette = name
     end}):Select(lights.palette, true)
-    lightsSection:AddSlider({text = 'Color Switch', flag = 'lights_color_step', min = 0, max = 2, value = lights.colorStep, increment = .05, suffix = 's', tooltip = 'Seconds between the colors moving one bulb along (0 = still)', callback = function(v)
-        lights.colorStep = v
-    end})
     lightsSection:AddToggle({text = 'Reverse Direction', flag = 'lights_reverse', state = lights.reverse, callback = function(bool)
         lights.reverse = bool
     end})
-    lookSection:AddSlider({text = 'Bulbs Per Drape', flag = 'lights_per_swag', min = 1, max = 6, value = lights.perSwag, increment = 1, callback = function(v)
-        lights.perSwag = v
-    end})
-    lookSection:AddSlider({text = 'Drape Width', flag = 'lights_swag', min = 40, max = 200, value = lights.swag, increment = 2, suffix = 'px', callback = function(v)
-        lights.swag = v
-    end})
-    lookSection:AddSlider({text = 'Droop', flag = 'lights_sag', min = 0, max = 12, value = lights.sag, increment = .5, suffix = 'px', callback = function(v)
-        lights.sag = v
-    end})
-    lookSection:AddSlider({text = 'Bulb Size', flag = 'lights_size', min = 2, max = 5, value = lights.bulbSize, increment = .1, callback = function(v)
-        lights.bulbSize = v
-    end})
-    lookSection:AddSlider({text = 'Swing', flag = 'lights_sway', min = 0, max = 3, value = lights.sway, increment = .1, callback = function(v)
-        lights.sway = v
-    end})
-    lookSection:AddSlider({text = 'Glow', flag = 'lights_glow', min = 0, max = 2, value = lights.glow, increment = .1, callback = function(v)
-        lights.glow = v
-    end})
-    lookSection:AddSlider({text = 'Twinkle', flag = 'lights_twinkle', min = 0, max = 1, value = lights.twinkle, increment = .05, callback = function(v)
-        lights.twinkle = v
-    end})
-    lightsSection:AddToggle({text = 'Shadow', flag = 'lights_shadow', state = lights.shadow, callback = function(bool)
-        lights.shadow = bool
-    end})
-
-    -- // Backdrop: the big tilted word behind the sections
-    local backdrop = library.backdrop
-    local backdropSection = lightsTab:AddSection('Backdrop', 1);
-
-    backdropSection:AddToggle({text = 'Show Backdrop', flag = 'backdrop_enabled', state = backdrop.enabled, callback = function(bool)
-        backdrop.enabled = bool
-    end})
-    backdropSection:AddBox({text = 'Word', flag = 'backdrop_text', input = backdrop.text, callback = function(text)
-        backdrop.text = text
-    end})
-    backdropSection:AddSlider({text = 'Strength', flag = 'backdrop_opacity', min = 0, max = .5, value = backdrop.opacity, increment = .01, callback = function(v)
-        backdrop.opacity = v
-    end})
-    backdropSection:AddSlider({text = 'Tilt', flag = 'backdrop_angle', min = -60, max = 60, value = backdrop.angle, increment = 1, suffix = ' deg', callback = function(v)
-        backdrop.angle = v
-    end})
-    backdropSection:AddSlider({text = 'Size', flag = 'backdrop_size', min = .3, max = 1, value = backdrop.size, increment = .05, callback = function(v)
-        backdrop.size = v
-    end})
-
-    -- // Mascot picture at the bottom of the sidebar
-    local mascotNames, mascotIds, currentMascot = {}, {}, 'None'
-    for _, preset in ipairs(library.mascotPresets) do
-        table.insert(mascotNames, preset.name)
-        mascotIds[preset.name] = preset.id
-        if library.mascot.enabled and tonumber(preset.id) == tonumber(menu.mascotId) then
-            currentMascot = preset.name
-        end
-    end
-    table.insert(mascotNames, 'None')
-    backdropSection:AddList({text = 'Sidebar Picture', flag = 'mascot_choice', values = mascotNames, callback = function(name)
-        for _, w in ipairs(library.windows) do
-            if w.SetMascot then
-                w:SetMascot(mascotIds[name] or false)
-            end
-        end
-    end}):Select(currentMascot, true)
 
     -- load the autoload config once everything (including the theme pickers) exists.
     -- deferred a moment so options the script adds right after this call still get their values.
