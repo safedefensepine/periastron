@@ -7,8 +7,10 @@
         one bulb along at a time, so the strand looks like it's moving (classic chasing lights)
       * clean, flat look: title bar + vertical sidebar tabs + content panel, section cards,
         switch-style toggles, sliders with a knob, bigger controls, festive theme presets
-      * a big tilted "swag" on the content panel behind the sections, the dog picture at the
-        bottom of the sidebar and the discord invite (click to copy) under it - all always on
+      * the dog picture at the bottom of the sidebar with the discord invite (click to copy)
+        under it - always on. (an optional tilted backdrop word exists too, off by default:
+        library.backdrop.enabled = true)
+      * centered title + subtitle, tab names, section titles and sidebar footer
       * uses the game's normal mouse while the menu is open (no drawn cursor)
 
     same api as periastron (library:init, NewWindow, AddTab, AddSection, AddToggle, ...),
@@ -348,9 +350,10 @@ library.lightPalettes = {
 }
 library.lightPaletteNames = {'classic', 'tree', 'warm', 'frost', 'candy', 'theme', 'rainbow'}
 
--- // Backdrop: the big tilted word on the content panel, behind the sections. always on.
+-- // Backdrop: a big tilted word on the content panel, behind the sections. OFF by default;
+-- set library.backdrop.enabled = true (before creating the window, or any time) to show it.
 library.backdrop = {
-    enabled = true;       -- always on (kept for the drawing code, not exposed in the menu)
+    enabled = false;      -- hidden unless you turn it on in code
     text = 'swag';        -- letters available: see library.backdropGlyphs (add your own there)
     angle = 30;           -- degrees, rising from bottom left to top right
     opacity = .09;        -- how strongly it shows (0 = invisible, 1 = full accent color)
@@ -2414,9 +2417,12 @@ function library:init()
         ----- Create Objects ----
         -- layout: title bar across the top, tab sidebar on the left, content panel on the right.
         -- with the lights on, the title bar gets a strip on top for the garland to hang in.
+        -- the title and the subtitle under it are both centered and styled the same.
         local GARLAND_H = library.lights.enabled and 22 or 0
-        local TITLE_H = 34 + GARLAND_H
-        local TITLE_Y = GARLAND_H + 10 -- where the title text sits
+        local subtitleText = tostring(data.subtitle or library.gamename)
+        local hasSubtitle = subtitleText ~= ''
+        local TITLE_H = GARLAND_H + (hasSubtitle and 50 or 34)
+        local TITLE_Y = GARLAND_H + 9 -- where the title text sits
         local SIDEBAR_W = tonumber(data.sidebarWidth) or 176 -- wide enough for the discord invite
         window.titleHeight, window.sidebarWidth = TITLE_H, SIDEBAR_W
         do
@@ -2470,26 +2476,30 @@ function library:init()
             })
 
             objs.title = utility:Draw('Text', {
-                Position = newUDim2(0,14,0,TITLE_Y);
+                Position = newUDim2(.5,0,0,TITLE_Y);
                 ThemeColor = 'Primary Text';
                 Text = window.title;
                 Font = 2;
                 Size = 13;
                 ZIndex = z+3;
                 Outline = true;
+                Center = true;
                 Parent = objs.titleBar;
             })
 
+            -- same look as the title, on the line under it
             objs.subtitle = utility:Draw('Text', {
-                ThemeColor = 'Option Text 3';
-                Text = tostring(data.subtitle or library.gamename);
+                Position = newUDim2(.5,0,0,TITLE_Y + 16);
+                ThemeColor = 'Primary Text';
+                Text = subtitleText;
                 Font = 2;
                 Size = 13;
                 ZIndex = z+3;
                 Outline = true;
+                Center = true;
+                Visible = hasSubtitle;
                 Parent = objs.titleBar;
             })
-            objs.subtitle.Position = newUDim2(1, -(objs.subtitle.TextBounds.X + 14), 0, TITLE_Y)
 
             objs.dragdetector = utility:Draw('Square',{
                 Size = newUDim2(1,0,1,0);
@@ -2540,13 +2550,14 @@ function library:init()
 
             -- discord invite at the bottom left; click it to copy
             objs.sidebarFooter = utility:Draw('Text', {
-                Position = newUDim2(0,12,1,-22);
+                Position = newUDim2(.5,0,1,-22);
                 ThemeColor = 'Unselected Tab Text';
                 Text = tostring(data.footer or library.discord);
                 Font = 2;
                 Size = 13;
                 ZIndex = z+3;
                 Outline = true;
+                Center = true;
                 Parent = objs.sidebar;
             })
 
@@ -4042,11 +4053,12 @@ function library:init()
                     })
 
                     objs.textlabel = utility:Draw('Text', {
-                        Position = newUDim2(0,8,0,4);
+                        Position = newUDim2(.5,0,0,4);
                         ThemeColor = 'Primary Text';
                         Size = 13;
                         Font = 2;
                         Outline = true;
+                        Center = true;
                         ZIndex = z+3;
                         Parent = objs.header;
                     })
@@ -6770,9 +6782,18 @@ function library:init()
                 objs.background.Size = newUDim2(1, 0, 0, ROW);
                 objs.background.Position = newUDim2(0, 0, 0, pos);
 
-                local textX = objs.icon and 30 or 12;
-                objs.text.Center = false;
-                objs.text.Position = newUDim2(0, textX + (v.selected and 2 or 0), .5, -7);
+                -- name (and icon, if any) centered in the row
+                if objs.icon then
+                    local ICON, GAP_ICON = 13, 6;
+                    local total = ICON + GAP_ICON + objs.text.TextBounds.X;
+                    local start = -total / 2;
+                    objs.icon.Position = newUDim2(.5, floor(start), .5, -6);
+                    objs.text.Center = false;
+                    objs.text.Position = newUDim2(.5, floor(start + ICON + GAP_ICON), .5, -7);
+                else
+                    objs.text.Center = true;
+                    objs.text.Position = newUDim2(.5, 0, .5, -7);
+                end
                 objs.text.ThemeColor = (v.selected or objs.background.Hover) and 'Selected Tab Text' or 'Unselected Tab Text';
 
                 if v.selected then
