@@ -15,7 +15,7 @@
 
     same api as periastron (library:init, NewWindow, AddTab, AddSection, AddToggle, ...),
     so existing scripts keep working. players can only change the light colors and direction
-    (Effects tab that CreateSettingsTab adds); the fixed look lives in library.lights,
+    (add them to any section with library:AddLightControls); the fixed look lives in library.lights,
     library.backdrop, library.mascot and library.discord.
 ]]
 
@@ -320,7 +320,7 @@ library.animations = {
 }
 
 -- // String lights: a garland hanging across the top of the window. always on.
--- the only things players can change (Effects tab) are the colors and the direction;
+-- the only things players can change are the colors and the direction (library:AddLightControls);
 -- everything else here is the fixed look, tweak it in code if you want.
 library.lights = {
     enabled = true;       -- always on (kept for the drawing code, not exposed in the menu)
@@ -449,7 +449,7 @@ library.themes = {
     {
         name = 'Evergreen',
         theme = {
-            ['Accent']                    = fromrgb(226,62,72);
+            ['Accent']                    = fromrgb(120,196,255); -- frost blue, same as the frost lights
             ['Background']                = fromrgb(13,20,16);
             ['Border']                    = fromrgb(0,0,0);
             ['Border 1']                  = fromrgb(44,66,52);
@@ -5705,14 +5705,14 @@ function library:init()
 
                         objs.line1 = utility:Draw('Square', {
                             Position = newUDim2(0,0,0,1);
-                            ThemeColor = 'Option Background';
+                            ThemeColor = 'Option Border 1';
                             ZIndex = z+1;
                             Parent = objs.holder;
                         })
 
                         objs.line2 = utility:Draw('Square', {
                             Position = newUDim2(0,0,0,1);
-                            ThemeColor = 'Option Background';
+                            ThemeColor = 'Option Border 1';
                             ZIndex = z+1;
                             Parent = objs.holder;
                         })
@@ -5751,11 +5751,13 @@ function library:init()
                         if typeof(str) == 'string' then
                             self.text = str;
                             self.objects.text.Text = str;
-                            local xScale = ( 1- utility:ConvertNumberRange(self.objects.text.TextBounds.X, 0, self.objects.holder.Object.Size.X, 0, 1)) / 2 - (str == '' and 0 or .04)
-                            self.objects.line1.Size = newUDim2(xScale, 0, 0, 1)
-                            self.objects.line2.Size = newUDim2(xScale, 0, 0, 1)
-                            self.objects.line1.Position = newUDim2(0,1,.5,-1)
-                            self.objects.line2.Position = newUDim2(1 - self.objects.line2.Size.X.Scale,-1,.5,-1)
+                            -- each line fills half the row up to the text (plus a small gap), worked out
+                            -- from the row's own width, so it's right no matter when this runs
+                            local half = (str == '' and 0 or self.objects.text.TextBounds.X / 2 + 8)
+                            self.objects.line1.Size = newUDim2(.5, -half - 3, 0, 1)
+                            self.objects.line1.Position = newUDim2(0, 3, .5, 0)
+                            self.objects.line2.Size = newUDim2(.5, -half - 3, 0, 1)
+                            self.objects.line2.Position = newUDim2(.5, half, .5, 0)
                         end
                     end
 
@@ -7111,6 +7113,22 @@ function library:init()
 
 end
 
+-- Adds the only two light settings players can change (Colors + Reverse Direction) to any section,
+-- e.g. a Festive tab:  library:AddLightControls(festiveTab:AddSection('Lights', 1))
+-- the lights themselves, the dog picture and the discord invite are always on.
+-- options use the flags 'lights_palette' and 'lights_reverse', so configs save them.
+function library:AddLightControls(section)
+    local lights = library.lights
+    local colors = section:AddList({text = 'Light Colors', flag = 'lights_palette', values = library.lightPaletteNames, callback = function(name)
+        lights.palette = name
+    end})
+    colors:Select(lights.palette, true)
+    local reverse = section:AddToggle({text = 'Reverse Direction', flag = 'lights_reverse', state = lights.reverse, callback = function(bool)
+        lights.reverse = bool
+    end})
+    return colors, reverse
+end
+
 function library:CreateSettingsTab(menu)
     local settingsTab = menu:AddTab('Settings', 999, library.IconPNG('2699'));
     local configSection = settingsTab:AddSection('Config', 2);
@@ -7366,19 +7384,6 @@ function library:CreateSettingsTab(menu)
             end
         end});
     end
-
-    -- // Effects: the lights, the swag backdrop and the dog are always on.
-    -- the only things players can change are the light colors and which way they run.
-    local lights = library.lights
-    local effectsTab = menu:AddTab('Effects', 995, library.IconPNG('1f384'));
-    local lightsSection = effectsTab:AddSection('Lights', 1);
-
-    lightsSection:AddList({text = 'Colors', flag = 'lights_palette', values = library.lightPaletteNames, callback = function(name)
-        lights.palette = name
-    end}):Select(lights.palette, true)
-    lightsSection:AddToggle({text = 'Reverse Direction', flag = 'lights_reverse', state = lights.reverse, callback = function(bool)
-        lights.reverse = bool
-    end})
 
     -- load the autoload config once everything (including the theme pickers) exists.
     -- deferred a moment so options the script adds right after this call still get their values.
