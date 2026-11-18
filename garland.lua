@@ -1,20 +1,17 @@
-
-
 --[[
     garland  -  a festive drawing ui library (built on the periastron core)
 
     what's different from periastron:
-      * a strand of glowing christmas lights wrapped around the window: the wire hugs the frame,
-        droops between hooks, and the bulbs hang off it. the colors switch one bulb along at a time,
-        so the strand looks like it's moving (classic chasing lights)
-      * soft ambient glow behind the window that slowly shifts through the light colors
-      * new window layout: title bar + vertical sidebar tabs + content panel
-      * new section cards (header strip), switch-style toggles, sliders with a knob,
-        festive theme presets
+      * a garland of glowing christmas lights hanging across the top of the window: the wire
+        droops between hooks and the bulbs hang from it, swinging a little. the colors switch
+        one bulb along at a time, so the strand looks like it's moving (classic chasing lights)
+      * clean, flat look: title bar + vertical sidebar tabs + content panel, section cards,
+        switch-style toggles, sliders with a knob, bigger controls, festive theme presets
+      * uses the game's normal mouse while the menu is open (no drawn cursor)
 
     same api as periastron (library:init, NewWindow, AddTab, AddSection, AddToggle, ...),
     so existing scripts keep working. everything about the lights lives in library.lights
-    and can be changed at runtime (or from the "Lights" section in the Theme tab).
+    and can be changed at runtime (or from the "Lights" tab that CreateSettingsTab adds).
 ]]
 
 -- // Load
@@ -317,26 +314,24 @@ library.animations = {
     indicator = .25;  -- sliding tab underline
 }
 
--- // String lights (can be changed at runtime, or from the Lights section in the Theme tab)
+-- // String lights: a garland hanging across the top of the window
+-- (can be changed at runtime, or from the Lights section in the Theme tab).
+-- set enabled = false BEFORE creating the window to also drop the strip the lights hang in.
 library.lights = {
-    enabled = true;       -- master switch for the light strand
+    enabled = true;       -- master switch
     palette = 'classic';  -- classic, tree, warm, frost, candy, theme, rainbow (see library.lightPalettes)
     colorStep = .45;      -- seconds between the colors switching one bulb along (this is what makes it look like it moves, 0 = still)
-    reverse = false;      -- run the color chase the other way around the window
-    spacing = 30;         -- pixels between bulbs
-    sag = 4;              -- how far the wire droops between two hooks
-    margin = 3;           -- gap between the window edge and the wire (small = wrapped tight around the window)
-    corner = 10;          -- radius the strand bends with around the corners
-    bulbSize = 3;         -- bulb radius in pixels
+    reverse = false;      -- run the colors the other way
+    swag = 84;            -- width of one drape of wire, hook to hook (pixels)
+    sag = 9;              -- how deep each drape hangs
+    perSwag = 3;          -- bulbs on each drape
+    bulbSize = 3.2;       -- bulb radius in pixels
+    sway = 1;             -- how much the bulbs swing (0 = still)
     glow = 1;             -- glow strength (0 = no glow, 2 = very bright)
     twinkle = .15;        -- random flicker per bulb (0 - 1)
-    chase = false;        -- extra bright wave rolling around the strand on top of the color switching
-    chaseSpeed = .35;     -- laps per second of that wave
-    wire = true;          -- draw the wire between the bulbs
-    ambient = true;       -- soft glow behind the window that slowly shifts through the light colors
     shadow = true;        -- soft drop shadow under the window
     powerOn = .8;         -- seconds for the bulbs to switch on one after another when the menu opens (0 = instant)
-    fps = 30;             -- how often the colors update (lower = cheaper)
+    fps = 40;             -- how often the lights update (lower = cheaper)
 }
 
 -- bulb colors, used in order around the strand.
@@ -1334,32 +1329,15 @@ function library:init()
         end
     end
 
-    -- // Cursor
-    -- accent-filled arrow with a dark outline, drawn every frame so it never lags behind the real mouse
-    self.cursorFill = utility:Draw('Triangle', {Filled = true, ThemeColor = 'Accent', Visible = false, ZIndex = self.zindexOrder.cursor});
-    self.cursorOutline = utility:Draw('Triangle', {Filled = false, Thickness = 1.5, Color = fromrgb(10,10,10), Visible = false, ZIndex = self.zindexOrder.cursor+1});
-    -- kept for scripts that referenced the old names
-    self.cursor1, self.cursor2 = self.cursorFill, self.cursorOutline
-
-    local function updateCursor()
-        local show = self.open
-        self.cursorFill.Visible = show
-        self.cursorOutline.Visible = show
-        if show then
-            local pos = inputservice:GetMouseLocation();
-            local a, b, c = pos, pos + newVector2(14, 5), pos + newVector2(5, 14)
-            self.cursorFill.PointA, self.cursorFill.PointB, self.cursorFill.PointC = a, b, c
-            self.cursorOutline.PointA, self.cursorOutline.PointB, self.cursorOutline.PointC = a, b, c
-        end
-    end
-
-    -- // Real mouse icon
-    -- hidden while the menu is open (games love to turn it back on, so it's enforced every frame)
+    -- // Mouse
+    -- no drawn cursor: the game's own mouse is used, so clicks always line up with what you see.
+    -- it's forced visible while the menu is open (lots of games hide it, so it's enforced every frame)
+    -- and the game's own setting comes back when the menu closes.
     local savedMouseIcon = inputservice.MouseIconEnabled
-    local function setRealMouseHidden(hidden)
+    local function setMenuMouse(menuOpen)
         pcall(function()
-            if hidden then
-                inputservice.MouseIconEnabled = false
+            if menuOpen then
+                inputservice.MouseIconEnabled = true
             else
                 inputservice.MouseIconEnabled = savedMouseIcon
             end
@@ -1433,23 +1411,13 @@ function library:init()
     end
 
     utility:Connection(library.unloaded, function()
-        setRealMouseHidden(false)
+        setMenuMouse(false)
         screenGui:Destroy()
     end)
 
-    local lastCursorPos = nil
     utility:Connection(runservice.RenderStepped, function()
-        if self.open then
-            local pos = inputservice:GetMouseLocation()
-            if pos ~= lastCursorPos then
-                lastCursorPos = pos
-                updateCursor()
-            end
-            if inputservice.MouseIconEnabled then
-                setRealMouseHidden(true)
-            end
-        else
-            lastCursorPos = nil
+        if self.open and not inputservice.MouseIconEnabled then
+            setMenuMouse(true)
         end
     end)
 
@@ -1602,13 +1570,13 @@ function library:init()
                 -- remember the game's own setting so closing the menu restores it
                 savedMouseIcon = inputservice.MouseIconEnabled
             end
-            setRealMouseHidden(true)
+            setMenuMouse(true)
             setMouseOverUI(utility:GetHoverObject() ~= nil)
         else
             lookingAround = false
             modalButton.Modal = true
             setMouseOverUI(false)
-            setRealMouseHidden(false)
+            setMenuMouse(false)
             -- closing the menu finishes whatever you were typing
             if library.activeBox then
                 library.activeBox:ReleaseFocus(true)
@@ -1628,7 +1596,6 @@ function library:init()
             actionservice:UnbindAction('FreezeMovement');
         end
 
-        updateCursor();
         for _,window in next, self.windows do
             window:SetOpen(bool);
         end
@@ -1710,6 +1677,7 @@ function library:init()
         objs.gradient = utility:Draw('Image', {
             Size = newUDim2(1,0,1,0);
             Data = self.images.gradientp90;
+            Visible = false; -- flat look (gradient kept for scripts that want it back)
             Transparency = .35;
             ZIndex = z+1;
             Parent = objs.background;
@@ -1950,6 +1918,7 @@ function library:init()
         objs.gradient = utility:Draw('Image', {
             Size = newUDim2(1,0,1,0);
             Data = self.images.gradientp90;
+            Visible = false; -- flat look (gradient kept for scripts that want it back)
             Transparency = .35;
             ZIndex = z+1;
             Parent = objs.background;
@@ -2329,12 +2298,15 @@ function library:init()
         table.insert(library.windows, window);
 
         ----- Create Objects ----
-        -- layout: title bar across the top, tab sidebar on the left, content panel on the right
-        local TITLE_H = 30
-        local SIDEBAR_W = tonumber(data.sidebarWidth) or 132
+        -- layout: title bar across the top, tab sidebar on the left, content panel on the right.
+        -- with the lights on, the title bar gets a strip on top for the garland to hang in.
+        local GARLAND_H = library.lights.enabled and 22 or 0
+        local TITLE_H = 34 + GARLAND_H
+        local TITLE_Y = GARLAND_H + 10 -- where the title text sits
+        local SIDEBAR_W = tonumber(data.sidebarWidth) or 140
         window.titleHeight, window.sidebarWidth = TITLE_H, SIDEBAR_W
         do
-            local size = data.size or newUDim2(0, 660, 0, 600);
+            local size = data.size or newUDim2(0, 700, 0, 640);
             local position = data.position or newUDim2(0, 250, 0, 150);
             local objs = window.objects;
             local z = library.zindexOrder.window;
@@ -2383,19 +2355,8 @@ function library:init()
                 Parent = objs.titleBar;
             })
 
-            -- soft accent haze just under the title line
-            objs.titleLineGlow = utility:Draw('Square', {
-                Size = newUDim2(1,0,0,3);
-                Position = newUDim2(0,0,1,0);
-                ThemeColor = 'Accent';
-                Transparency = .16;
-                ZIndex = z+4;
-                NoHit = true;
-                Parent = objs.titleBar;
-            })
-
             objs.title = utility:Draw('Text', {
-                Position = newUDim2(0,12,0,8);
+                Position = newUDim2(0,14,0,TITLE_Y);
                 ThemeColor = 'Primary Text';
                 Text = window.title;
                 Font = 2;
@@ -2414,7 +2375,7 @@ function library:init()
                 Outline = true;
                 Parent = objs.titleBar;
             })
-            objs.subtitle.Position = newUDim2(1, -(objs.subtitle.TextBounds.X + 12), 0, 8)
+            objs.subtitle.Position = newUDim2(1, -(objs.subtitle.TextBounds.X + 14), 0, TITLE_Y)
 
             objs.dragdetector = utility:Draw('Square',{
                 Size = newUDim2(1,0,1,0);
@@ -2456,16 +2417,6 @@ function library:init()
                 ZIndex = z+8;
                 NoHit = true;
                 Parent = objs.tabHolder;
-            })
-
-            objs.tabIndicatorGlow = utility:Draw('Square', {
-                Size = newUDim2(0,5,1,0);
-                Position = newUDim2(1,0,0,0);
-                ThemeColor = 'Accent';
-                Transparency = .18;
-                ZIndex = z+8;
-                NoHit = true;
-                Parent = objs.tabIndicator;
             })
 
             objs.sidebarFooter = utility:Draw('Text', {
@@ -2555,25 +2506,23 @@ function library:init()
         -------------------------
 
         ---- String lights ----
-        -- A strand of bulbs wrapped around the window: the wire hugs the frame (rounded at the corners)
-        -- and droops a little between hooks, and a bulb hangs off the wire at every droop, tilted
-        -- alternately left/right and pulled down a bit by gravity, like a real string of lights.
-        -- The bulbs never move; the motion comes from the colors stepping one bulb along every
-        -- cfg.colorStep seconds (a classic chasing light string). Bulb positions are only recalculated
-        -- when the window moves/resizes or a layout setting changes; every tick only touches colors.
-        -- The shadow and ambient glow are parented to the window (they move/fade with it); the bulbs
-        -- are not parented and are placed directly, so dragging never snaps them for a frame.
-        -- Nothing here is a hit area, so the lights never block clicks. Wrapped in pcall so a Drawing
-        -- quirk can't break the window.
+        -- A garland hung across the top of the window, inside the title bar strip:
+        -- the wire is hooked at regular points and droops between them, and the bulbs hang straight
+        -- down from the wire, swinging a little. The colors switch one bulb along every
+        -- cfg.colorStep seconds, which makes the strand look like it's moving (chasing lights).
+        -- The bulbs are not parented (they're placed directly every tick, so dragging never snaps
+        -- them) and nothing here is a hit area, so the lights never block clicks or dragging.
+        -- Wrapped in pcall so a Drawing quirk can't break the window.
         local lightsOk, lightsErr = pcall(function()
             local cfg = library.lights
             local objs = window.objects
             local z = library.zindexOrder.window
             local frame = objs.frame
+            local strip = objs.titleBar
             local white, black = c3new(1, 1, 1), c3new(0, 0, 0)
-            local wireColor, capColor = fromrgb(28, 48, 34), fromrgb(58, 66, 60)
-            local GRAVITY = newVector2(0, 1)
-            local TAU = pi * 2
+            local wireColor, wireShine = fromrgb(30, 52, 36), fromrgb(62, 92, 70)
+            local socketColor, hookColor = fromrgb(70, 78, 72), fromrgb(120, 124, 120)
+            local INSET = 10 -- gap between the window sides and the first / last hook
 
             local function setShown(drawing, shown)
                 if drawing.Visible ~= shown then
@@ -2581,7 +2530,7 @@ function library:init()
                 end
             end
 
-            -- soft drop shadow
+            -- soft drop shadow under the window (parented, so it moves and fades with it)
             local shadowLayers = {}
             for i = 1, 4 do
                 shadowLayers[i] = utility:Draw('Square', {
@@ -2595,39 +2544,32 @@ function library:init()
                 })
             end
 
-            -- ambient glow: stacked, very transparent rings behind the frame, recolored over time
-            local glowRings = {}
-            local ringAlpha = {.16, .09, .045}
-            for i = 1, 3 do
-                glowRings[i] = utility:Draw('Square', {
-                    Size = newUDim2(1, i * 6, 1, i * 6);
-                    Position = newUDim2(0, -i * 3, 0, -i * 3);
-                    Color = library.theme['Accent'] or white;
-                    Transparency = ringAlpha[i];
-                    ZIndex = z - 16 - i;
-                    NoHit = true;
-                    Parent = frame;
-                })
-            end
-
-            -- // Pools (grow on demand when the window gets bigger or the spacing smaller)
-            local bulbs, wires = {}, {}
+            -- // Pools (grow on demand when the window gets wider)
+            local bulbs, wires, hooks = {}, {}, {}
 
             local function newBulb()
                 local b = {seed = math.random() * 100}
-                b.glowOuter = utility:Draw('Circle', {Filled = true, NumSides = 20, Radius = 10, Transparency = 0, Visible = false, ZIndex = z - 15})
-                b.glowInner = utility:Draw('Circle', {Filled = true, NumSides = 16, Radius = 6, Transparency = 0, Visible = false, ZIndex = z - 14})
-                b.cap = utility:Draw('Line', {Thickness = 3, Color = capColor, Transparency = 1, Visible = false, ZIndex = z - 12})
-                b.body = utility:Draw('Circle', {Filled = true, NumSides = 14, Radius = 3, Transparency = 1, Visible = false, ZIndex = z - 11})
-                -- pointed end of the bulb (teardrop / C9 shape)
-                b.tip = utility:Draw('Triangle', {Filled = true, Thickness = 1, Transparency = 1, Visible = false, ZIndex = z - 11})
-                b.shine = utility:Draw('Circle', {Filled = true, NumSides = 8, Radius = 1, Color = white, Transparency = 0, Visible = false, ZIndex = z - 10})
-                b.parts = {b.glowOuter, b.glowInner, b.cap, b.body, b.tip, b.shine}
+                b.glowOuter = utility:Draw('Circle', {Filled = true, NumSides = 20, Radius = 11, Transparency = 0, Visible = false, ZIndex = z + 2})
+                b.glowInner = utility:Draw('Circle', {Filled = true, NumSides = 16, Radius = 6, Transparency = 0, Visible = false, ZIndex = z + 2})
+                b.socket = utility:Draw('Line', {Thickness = 3.5, Color = socketColor, Transparency = 1, Visible = false, ZIndex = z + 5})
+                b.body = utility:Draw('Circle', {Filled = true, NumSides = 16, Radius = 3, Transparency = 1, Visible = false, ZIndex = z + 6})
+                -- pointed end of the bulb (C9 / teardrop shape)
+                b.tip = utility:Draw('Triangle', {Filled = true, Thickness = 1, Transparency = 1, Visible = false, ZIndex = z + 6})
+                b.shine = utility:Draw('Circle', {Filled = true, NumSides = 8, Radius = 1, Color = white, Transparency = 0, Visible = false, ZIndex = z + 7})
+                b.parts = {b.glowOuter, b.glowInner, b.socket, b.body, b.tip, b.shine}
                 return b
             end
 
             local function newWire()
-                return utility:Draw('Line', {Thickness = 1.4, Color = wireColor, Transparency = 1, Visible = false, ZIndex = z - 13})
+                -- dark wire with a thin lighter line on top, so it reads as a twisted cord
+                return {
+                    main = utility:Draw('Line', {Thickness = 1.6, Color = wireColor, Transparency = 1, Visible = false, ZIndex = z + 4}),
+                    shine = utility:Draw('Line', {Thickness = .8, Color = wireShine, Transparency = 1, Visible = false, ZIndex = z + 4}),
+                }
+            end
+
+            local function newHook()
+                return utility:Draw('Circle', {Filled = true, NumSides = 8, Radius = 1.8, Color = hookColor, Transparency = 1, Visible = false, ZIndex = z + 5})
             end
 
             local function showBulb(b, shown)
@@ -2638,64 +2580,9 @@ function library:init()
                 end
             end
 
-            -- // Path: a rounded rectangle around the frame, walked clockwise
-            local segs, perim, radius = {}, 1, 0
-
-            local function buildPath(pos, size)
-                local m = tonumber(cfg.margin) or 3
-                local x0, y0 = pos.X - m, pos.Y - m
-                local w, h = size.X + m * 2, size.Y + m * 2
-                local r = clamp(tonumber(cfg.corner) or 0, 0, math.min(w, h) / 2)
-                radius = r
-                table.clear(segs)
-
-                local function line(ax, ay, bx, by, nx, ny)
-                    local len = math.sqrt((bx - ax) ^ 2 + (by - ay) ^ 2)
-                    local inv = 1 / math.max(len, 1e-6)
-                    table.insert(segs, {arc = false, a = newVector2(ax, ay), d = newVector2((bx - ax) * inv, (by - ay) * inv), n = newVector2(nx, ny), len = len})
-                end
-                local function arc(cx, cy, from)
-                    table.insert(segs, {arc = true, c = newVector2(cx, cy), from = from, len = r * pi / 2})
-                end
-
-                line(x0 + r, y0, x0 + w - r, y0, 0, -1)          -- top
-                arc(x0 + w - r, y0 + r, -pi / 2)                  -- top right
-                line(x0 + w, y0 + r, x0 + w, y0 + h - r, 1, 0)   -- right
-                arc(x0 + w - r, y0 + h - r, 0)                    -- bottom right
-                line(x0 + w - r, y0 + h, x0 + r, y0 + h, 0, 1)   -- bottom
-                arc(x0 + r, y0 + h - r, pi / 2)                   -- bottom left
-                line(x0, y0 + h - r, x0, y0 + r, -1, 0)          -- left
-                arc(x0 + r, y0 + r, pi)                           -- top left
-
-                perim = 0
-                for _, s in ipairs(segs) do
-                    s.start = perim
-                    perim += s.len
-                end
-                perim = math.max(perim, 1)
-            end
-
-            -- point on the path at distance d, plus the outward normal there
-            local function pathAt(d)
-                d = d % perim
-                for _, s in ipairs(segs) do
-                    if s.len > 0 and d <= s.start + s.len then
-                        local t = d - s.start
-                        if s.arc then
-                            local ang = s.from + t / math.max(radius, 1e-6)
-                            local n = newVector2(math.cos(ang), math.sin(ang))
-                            return s.c + n * radius, n
-                        end
-                        return s.a + s.d * t, s.n
-                    end
-                end
-                local s = segs[1]
-                return s.a, s.n
-            end
-
-            -- direction the wire droops at a point: away from the window, pulled down a little
-            local function droopDir(n)
-                return (n + GRAVITY * .4).Unit
+            local function showWire(w, shown)
+                setShown(w.main, shown)
+                setShown(w.shine, shown)
             end
 
             -- // Colors (every palette is a list; 'theme' and 'rainbow' are built here)
@@ -2718,105 +2605,22 @@ function library:init()
                 return pal
             end
 
-            local function ambientColor(pal, now)
-                local t = now * .25
-                local i = floor(t) % #pal + 1
-                local f = t % 1
-                f = f * f * (3 - 2 * f) -- smoothstep
-                return pal[i]:Lerp(pal[i % #pal + 1], f)
-            end
-
             -- // State
             local broken = false
             local hidden = true
             local wasOpen, openedAt, closedAt = false, 0, -10
             local lastUpdate = 0
             local lastPos, lastSize = nil, nil
-            local layoutKey = nil   -- when this changes, bulb positions are recalculated
-            local count, wireCount = 0, 0
-            local points = {}
 
             local function hideStrand()
                 for _, b in ipairs(bulbs) do showBulb(b, false) end
-                for _, w in ipairs(wires) do setShown(w, false) end
+                for _, w in ipairs(wires) do showWire(w, false) end
+                for _, h in ipairs(hooks) do setShown(h, false) end
                 hidden = true
-                layoutKey = nil
             end
 
-            -- places every bulb + wire segment (only runs when the layout actually changed)
-            local function layoutStrand(pos, size)
-                buildPath(pos, size)
-
-                count = clamp(floor(perim / math.max(tonumber(cfg.spacing) or 30, 8) + .5), 4, 400)
-                local spacing = perim / count
-                local wireOn = cfg.wire and true or false
-                wireCount = wireOn and count * 4 or 0
-
-                while #bulbs < count do table.insert(bulbs, newBulb()) end
-                while #wires < wireCount do table.insert(wires, newWire()) end
-                for i = count + 1, #bulbs do showBulb(bulbs[i], false) end
-                for i = wireCount + 1, #wires do setShown(wires[i], false) end
-
-                local r = math.max(tonumber(cfg.bulbSize) or 3, 1)
-                local sag = tonumber(cfg.sag) or 3
-                local capLen = r * .8 + 1
-
-                -- wire: from hook to hook, drooping most where the bulb hangs (4 lines per drape)
-                if wireOn then
-                    for k = 0, count - 1 do
-                        for q = 0, 3 do
-                            local u = q / 4
-                            local p, n = pathAt((k + u) * spacing)
-                            points[k * 4 + q + 1] = p + droopDir(n) * (sag * 4 * u * (1 - u))
-                        end
-                    end
-                    for i = 1, wireCount do
-                        local w = wires[i]
-                        setShown(w, true)
-                        w.Object.From = points[i]
-                        w.Object.To = points[i % wireCount + 1]
-                    end
-                end
-
-                for k = 1, count do
-                    local b = bulbs[k]
-                    showBulb(b, true)
-
-                    local p, n = pathAt((k - .5) * spacing)
-                    local base = p + droopDir(n) * sag            -- lowest point of the drape
-                    local side = newVector2(-n.Y, n.X)
-                    local tilt = (k % 2 == 0) and .45 or -.45      -- alternate left / right
-                    local dir = (n + GRAVITY * .55 + side * tilt).Unit
-                    local across = newVector2(-dir.Y, dir.X)
-
-                    local capEnd = base + dir * capLen
-                    local center = capEnd + dir * (r * .85)
-
-                    b.cap.Object.From = base
-                    b.cap.Object.To = capEnd
-                    b.cap.Object.Thickness = math.max(r * .9, 2)
-
-                    b.body.Object.Position = center
-                    b.body.Object.Radius = r
-
-                    local tip = b.tip.Object
-                    tip.PointA = center + across * (r * .92)
-                    tip.PointB = center - across * (r * .92)
-                    tip.PointC = center + dir * (r * 2.2)
-
-                    b.shine.Object.Position = center - across * (r * .35)
-                    b.shine.Object.Radius = math.max(r * .32, .8)
-
-                    local glowCenter = center + dir * (r * .55)
-                    b.glowInner.Object.Position = glowCenter
-                    b.glowInner.Object.Radius = r * 2.3
-                    b.glowOuter.Object.Position = glowCenter
-                    b.glowOuter.Object.Radius = r * 3.8
-                end
-            end
-
-            local function updateLights(now, frameData)
-                local pos, size = frameData.AbsolutePosition, frameData.AbsoluteSize
+            local function updateLights(now, stripData)
+                local pos, size = stripData.AbsolutePosition, stripData.AbsoluteSize
 
                 -- open / close bookkeeping (the strand fades in, powers on, and fades out with the menu)
                 if window.open and not wasOpen then
@@ -2834,17 +2638,6 @@ function library:init()
                     alpha = 1 - clamp((now - closedAt) / .18, 0, 1)
                 end
 
-                local pal = getPalette()
-                local amb = ambientColor(pal, now)
-
-                local ambientOn = cfg.enabled and cfg.ambient
-                for _, ring in ipairs(glowRings) do
-                    setShown(ring, ambientOn and true or false)
-                    if ambientOn then
-                        ring.Object.Color = amb
-                    end
-                end
-
                 local wantShadow = cfg.shadow and true or false
                 for _, layer in ipairs(shadowLayers) do
                     setShown(layer, wantShadow)
@@ -2856,14 +2649,52 @@ function library:init()
                 end
                 hidden = false
 
-                local key = table.concat({tostring(pos), tostring(size), tostring(cfg.margin), tostring(cfg.corner),
-                    tostring(cfg.spacing), tostring(cfg.bulbSize), tostring(cfg.sag), tostring(cfg.wire)}, '|')
-                if key ~= layoutKey then
-                    layoutKey = key
-                    layoutStrand(pos, size)
+                -- // Layout: drapes from hook to hook across the top strip
+                local x0, x1 = pos.X + INSET, pos.X + size.X - INSET
+                local hookY = pos.Y + 3
+                local span = math.max(x1 - x0, 20)
+                local drapes = math.max(floor(span / math.max(tonumber(cfg.swag) or 84, 30) + .5), 1)
+                local drapeW = span / drapes
+                local sag = math.max(tonumber(cfg.sag) or 9, 0)
+                local perDrape = clamp(floor(tonumber(cfg.perSwag) or 3), 1, 8)
+                local SEG = 10 -- wire lines per drape
+
+                local count = drapes * perDrape
+                local wireCount = drapes * SEG
+                while #bulbs < count do table.insert(bulbs, newBulb()) end
+                while #wires < wireCount do table.insert(wires, newWire()) end
+                while #hooks < drapes + 1 do table.insert(hooks, newHook()) end
+                for i = count + 1, #bulbs do showBulb(bulbs[i], false) end
+                for i = wireCount + 1, #wires do showWire(wires[i], false) end
+                for i = drapes + 2, #hooks do setShown(hooks[i], false) end
+
+                -- wire height at u (0..1) along a drape: a smooth droop, deepest in the middle
+                local function wireAt(d, u)
+                    return newVector2(x0 + (d + u) * drapeW, hookY + sag * 4 * u * (1 - u))
                 end
 
-                -- // Color chase: every colorStep seconds each color moves one bulb along the strand
+                for d = 0, drapes - 1 do
+                    for s = 1, SEG do
+                        local a, b = wireAt(d, (s - 1) / SEG), wireAt(d, s / SEG)
+                        local w = wires[d * SEG + s]
+                        showWire(w, true)
+                        w.main.Object.From, w.main.Object.To = a, b
+                        w.main.Object.Transparency = alpha
+                        w.shine.Object.From, w.shine.Object.To = a - newVector2(0, .5), b - newVector2(0, .5)
+                        w.shine.Object.Transparency = .6 * alpha
+                    end
+                end
+
+                for h = 1, drapes + 1 do
+                    local hook = hooks[h]
+                    setShown(hook, true)
+                    hook.Object.Position = newVector2(x0 + (h - 1) * drapeW, hookY)
+                    hook.Object.Transparency = alpha
+                end
+
+                -- // Colors: every colorStep seconds each color moves one bulb along the strand
+                local pal = getPalette()
+                local n = #pal
                 local stepTime = tonumber(cfg.colorStep) or 0
                 local direction = cfg.reverse and -1 or 1
                 local step, blend = 0, 1
@@ -2874,22 +2705,33 @@ function library:init()
                     blend = clamp((t - step) * stepTime / math.min(.12, stepTime * .5), 0, 1)
                 end
 
+                local r = math.max(tonumber(cfg.bulbSize) or 3.2, 1)
                 local glow = math.max(tonumber(cfg.glow) or 1, 0)
                 local twinkle = clamp(tonumber(cfg.twinkle) or 0, 0, 1)
+                local sway = math.max(tonumber(cfg.sway) or 1, 0)
                 local powerOn = tonumber(cfg.powerOn) or 0
-                local wave = cfg.chase
-                local waveSpeed = tonumber(cfg.chaseSpeed) or .35
-                local n = #pal
-
-                if wireCount > 0 then
-                    for i = 1, wireCount do
-                        wires[i].Object.Transparency = .95 * alpha
-                    end
-                end
+                local socketLen = r * .9 + 1
 
                 for k = 1, count do
                     local b = bulbs[k]
+                    showBulb(b, true)
 
+                    -- where on the wire this bulb is clipped on
+                    local d = floor((k - 1) / perDrape)
+                    local i = (k - 1) % perDrape + 1
+                    local attach = wireAt(d, i / (perDrape + 1))
+
+                    -- hangs straight down, with a small alternating tilt and a gentle swing (a ripple along the strand)
+                    local tilt = ((k % 2 == 0) and .1 or -.1)
+                    local swing = math.sin(now * 1.6 + attach.X * .035) * .12 * sway
+                    local angle = tilt + swing
+                    local dir = newVector2(math.sin(angle), math.cos(angle))
+                    local across = newVector2(-dir.Y, dir.X)
+
+                    local socketEnd = attach + dir * socketLen
+                    local center = socketEnd + dir * (r * .85)
+
+                    -- color of this bulb (with a quick fade when it switches)
                     local cur = pal[((k - 1 - direction * step) % n) + 1]
                     local color = cur
                     if blend < 1 then
@@ -2897,11 +2739,8 @@ function library:init()
                         color = prev:Lerp(cur, blend)
                     end
 
+                    -- brightness: twinkle dips + sparkles, power-on sequence left to right
                     local bright = 1
-                    if wave then
-                        local w = (math.cos(((k - 1) / count - now * waveSpeed * direction) * TAU * 2) + 1) / 2
-                        bright = .55 + .45 * w * w * w
-                    end
                     local sparkle = 0
                     if twinkle > 0 then
                         local seed = b.seed
@@ -2919,29 +2758,47 @@ function library:init()
                         bodyColor = bodyColor:Lerp(white, sparkle * .7)
                     end
 
-                    b.cap.Object.Transparency = alpha
+                    local socket, body, tip, shine = b.socket.Object, b.body.Object, b.tip.Object, b.shine.Object
+                    local gi, go = b.glowInner.Object, b.glowOuter.Object
 
-                    b.body.Object.Color = bodyColor
-                    b.body.Object.Transparency = alpha
-                    b.tip.Object.Color = bodyColor
-                    b.tip.Object.Transparency = alpha
+                    socket.From, socket.To = attach, socketEnd
+                    socket.Thickness = math.max(r * 1.1, 2.5)
+                    socket.Transparency = alpha
 
-                    b.shine.Object.Transparency = alpha * .55 * bright
+                    body.Position = center
+                    body.Radius = r
+                    body.Color = bodyColor
+                    body.Transparency = alpha
 
-                    b.glowInner.Object.Color = color
-                    b.glowInner.Object.Transparency = clamp(.3 * glow * bright * alpha, 0, 1)
-                    b.glowOuter.Object.Color = color
-                    b.glowOuter.Object.Transparency = clamp((.1 + .08 * sparkle) * glow * bright * alpha, 0, 1)
+                    tip.PointA = center + across * (r * .92)
+                    tip.PointB = center - across * (r * .92)
+                    tip.PointC = center + dir * (r * 2.2)
+                    tip.Color = bodyColor
+                    tip.Transparency = alpha
+
+                    shine.Position = center - across * (r * .35) - dir * (r * .2)
+                    shine.Radius = math.max(r * .32, .8)
+                    shine.Transparency = alpha * .55 * bright
+
+                    local glowCenter = center + dir * (r * .6)
+                    gi.Position = glowCenter
+                    gi.Radius = r * 2.3
+                    gi.Color = color
+                    gi.Transparency = clamp(.28 * glow * bright * alpha, 0, 1)
+                    go.Position = glowCenter
+                    go.Radius = r * 4
+                    go.Color = color
+                    go.Transparency = clamp((.09 + .08 * sparkle) * glow * bright * alpha, 0, 1)
                 end
             end
 
             utility:Connection(runservice.RenderStepped, function()
                 if broken then return end
-                local frameData = frame.Object and library.drawings[frame.Object]
-                if not frameData then return end -- unloaded
+                local stripData = strip.Object and library.drawings[strip.Object]
+                if not stripData then return end -- unloaded
 
                 local now = os.clock()
-                local moved = frameData.AbsolutePosition ~= lastPos or frameData.AbsoluteSize ~= lastSize
+                local moved = stripData.AbsolutePosition ~= lastPos or stripData.AbsoluteSize ~= lastSize
                 local stateChanged = wasOpen ~= window.open
                 local fading = (not window.open) and (now - closedAt) < .25
                 local active = window.open or fading or not hidden
@@ -2949,14 +2806,14 @@ function library:init()
                     return
                 end
 
-                local interval = 1 / math.max(tonumber(cfg.fps) or 30, 1)
+                local interval = 1 / math.max(tonumber(cfg.fps) or 40, 1)
                 if not moved and not stateChanged and now - lastUpdate < interval then
                     return
                 end
                 lastUpdate = now
-                lastPos, lastSize = frameData.AbsolutePosition, frameData.AbsoluteSize
+                lastPos, lastSize = stripData.AbsolutePosition, stripData.AbsoluteSize
 
-                local ok, err = pcall(updateLights, now, frameData)
+                local ok, err = pcall(updateLights, now, stripData)
                 if not ok then
                     broken = true
                     pcall(hideStrand)
@@ -3384,7 +3241,7 @@ function library:init()
             -- only `max` rows exist (a small reused pool); scrolling just changes which values they show.
             -- scroll with the mouse wheel, or drag the scrollbar on the right.
             local dropdown = window.dropdown
-            local ROW, PAD = 18, 2
+            local ROW, PAD = 22, 2
             local z = library.zindexOrder.dropdown
             dropdown.scroll = 0
 
@@ -3465,7 +3322,7 @@ function library:init()
                     Parent = self.objects.background;
                 })
                 row.text = utility:Draw('Text', {
-                    Position = newUDim2(0,3,0,1);
+                    Position = newUDim2(0,5,0,4);
                     ThemeColor = 'Option Text 2';
                     Size = 13;
                     Font = 2;
@@ -3761,7 +3618,7 @@ function library:init()
 
                 -- one row in the sidebar; UpdateTabs stacks them and slides the accent bar
                 objs.background = utility:Draw('Square', {
-                    Size = newUDim2(1,0,0,26);
+                    Size = newUDim2(1,0,0,30);
                     Parent = self.objects.tabHolder;
                     ThemeColor = 'Unselected Tab Background';
                     ZIndex = z;
@@ -3970,7 +3827,7 @@ function library:init()
                         local z = library.zindexOrder.window+25;
 
                         objs.holder = utility:Draw('Square', {
-                            Size = newUDim2(1,0,0,17);
+                            Size = newUDim2(1,0,0,24);
                             Transparency = 0;
                             ZIndex = z+5;
                             Parent = section.objects.optionholder;
@@ -3978,8 +3835,8 @@ function library:init()
 
                         -- switch: a little track with a knob that slides across when it's on
                         objs.background = utility:Draw('Square', {
-                            Size = newUDim2(0,20,0,10);
-                            Position = newUDim2(0,2,0,4);
+                            Size = newUDim2(0,28,0,14);
+                            Position = newUDim2(0,2,0,5);
                             ThemeColor = 'Option Background';
                             ZIndex = z+3;
                             Parent = objs.holder;
@@ -3988,13 +3845,14 @@ function library:init()
                         objs.gradient = utility:Draw('Image', {
                             Size = newUDim2(1,0,1,0);
                             Data = library.images.gradientp45;
+                            Visible = false; -- flat look (gradient kept for scripts that want it back)
                             Transparency = .25;
                             ZIndex = z+4;
                             Parent = objs.background;
                         })
 
                         objs.knob = utility:Draw('Square', {
-                            Size = newUDim2(0,6,0,6);
+                            Size = newUDim2(0,10,0,10);
                             Position = newUDim2(0,2,0,2);
                             ThemeColor = 'Option Text 3';
                             ZIndex = z+5;
@@ -4019,7 +3877,7 @@ function library:init()
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(0,30,0,1);
+                            Position = newUDim2(0,40,0,5);
                             ThemeColor = 'Option Text 3';
                             Size = 13;
                             Font = 2;
@@ -4057,7 +3915,7 @@ function library:init()
 
                             -- slide the knob (instant the first time, so default-on toggles start in place)
                             local knob = self.objects.knob
-                            local knobPos = bool and newUDim2(1,-8,0,2) or newUDim2(0,2,0,2)
+                            local knobPos = bool and newUDim2(1,-12,0,2) or newUDim2(0,2,0,2)
                             knob.ThemeColor = bool and 'Option Text 1' or 'Option Text 3'
                             if self.knobReady and library.animations.enabled then
                                 utility:Tween(knob, 'Position', knobPos, .14, Enum.EasingDirection.Out, Enum.EasingStyle.Quad)
@@ -4103,7 +3961,7 @@ function library:init()
                             end
                         end
 
-                        self.objects.holder.Size = newUDim2(1,0,0,17 + y);
+                        self.objects.holder.Size = newUDim2(1,0,0,24 + y);
                         section:UpdateOptions()
 
                     end
@@ -4144,15 +4002,15 @@ function library:init()
                             local z = library.zindexOrder.window+25;
     
                             objs.holder = utility:Draw('Square', {
-                                Size = newUDim2(0,21,0,17);
+                                Size = newUDim2(0,26,0,24);
                                 Transparency = 0;
                                 ZIndex = z+6;
                                 Parent = self.objects.holder;
                             })
     
                             objs.background = utility:Draw('Square', {
-                                Size = newUDim2(0,15,0,8);
-                                Position = newUDim2(0,4,0,5);
+                                Size = newUDim2(0,20,0,12);
+                                Position = newUDim2(0,4,0,6);
                                 ZIndex = z+3;
                                 Parent = objs.holder;
                             })
@@ -4160,6 +4018,7 @@ function library:init()
                             objs.gradient = utility:Draw('Image', {
                                 Size = newUDim2(1,0,1,0);
                                 Data = library.images.gradientp45;
+                                Visible = false; -- flat look (gradient kept for scripts that want it back)
                                 Transparency = .25;
                                 ZIndex = z+4;
                                 Parent = objs.background;
@@ -4306,7 +4165,7 @@ function library:init()
                             local z = library.zindexOrder.window+25;
     
                             objs.holder = utility:Draw('Square', {
-                                Size = newUDim2(0,0,0,17);
+                                Size = newUDim2(0,0,0,24);
                                 Transparency = 0;
                                 ZIndex = z+6;
                                 Parent = self.objects.holder;
@@ -4399,8 +4258,8 @@ function library:init()
                         function bind:SetKeyText(str)
                             str = tostring(str);
                             self.objects.keyText.Text = '['..str..']';
-                            self.objects.keyText.Position = newUDim2(0, 2, 0, 2);
-                            self.objects.holder.Size = newUDim2(0,self.objects.keyText.TextBounds.X+2,0,17)
+                            self.objects.keyText.Position = newUDim2(0, 2, 0, 5);
+                            self.objects.holder.Size = newUDim2(0,self.objects.keyText.TextBounds.X+2,0,24)
                             toggle:UpdateOptions();
                         end
     
@@ -4516,7 +4375,7 @@ function library:init()
                             local z = library.zindexOrder.window+25;
 
                             objs.holder = utility:Draw('Square', {
-                                Size = newUDim2(1,0,0,20);
+                                Size = newUDim2(1,0,0,24);
                                 Transparency = 0;
                                 ZIndex = z+6;
                                 Parent = toggle.objects.holder;
@@ -4556,13 +4415,14 @@ function library:init()
                             objs.gradient = utility:Draw('Image', {
                                 Size = newUDim2(1,0,1,0);
                                 Data = library.images.gradientp90;
+                                Visible = false; -- flat look (gradient kept for scripts that want it back)
                                 Transparency = .65;
                                 ZIndex = z+4;
                                 Parent = objs.background;
                             })
     
                             objs.text = utility:Draw('Text', {
-                                Position = newUDim2(.5,0,0,-1);
+                                Position = newUDim2(.5,0,0,1);
                                 ThemeColor = 'Option Text 3';
                                 Size = 13;
                                 Font = 2;
@@ -4697,7 +4557,7 @@ function library:init()
                             local z = library.zindexOrder.window+25;
     
                             objs.holder = utility:Draw('Square', {
-                                Size = newUDim2(1,0,0,22);
+                                Size = newUDim2(1,0,0,26);
                                 Transparency = 0;
                                 ZIndex = z+6;
                                 Parent = toggle.objects.holder;
@@ -4730,13 +4590,14 @@ function library:init()
                             objs.gradient = utility:Draw('Image', {
                                 Size = newUDim2(1,0,1,0);
                                 Data = library.images.gradientp90;
+                                Visible = false; -- flat look (gradient kept for scripts that want it back)
                                 Transparency = .65;
                                 ZIndex = z+4;
                                 Parent = objs.background;
                             })
     
                             objs.inputText = utility:Draw('Text', {
-                                Position = newUDim2(0,4,0,0);
+                                Position = newUDim2(0,4,0,2);
                                 ThemeColor = 'Option Text 2';
                                 Text = 'none',
                                 Size = 13;
@@ -4747,7 +4608,7 @@ function library:init()
                             })
     
                             objs.openText = utility:Draw('Text', {
-                                Position = newUDim2(1,-10,0,0);
+                                Position = newUDim2(1,-10,0,2);
                                 ThemeColor = 'Option Text 3';
                                 Text = '+';
                                 Size = 13;
@@ -4942,15 +4803,15 @@ function library:init()
                         local z = library.zindexOrder.window+25;
 
                         objs.holder = utility:Draw('Square', {
-                            Size = newUDim2(1,0,0,32);
+                            Size = newUDim2(1,0,0,40);
                             Transparency = 0;
                             ZIndex = z+4;
                             Parent = section.objects.optionholder;
                         })
 
                         objs.background = utility:Draw('Square', {
-                            Size = newUDim2(1,-8,0,6);
-                            Position = newUDim2(0,4,1,-11);
+                            Size = newUDim2(1,-8,0,8);
+                            Position = newUDim2(0,4,1,-14);
                             ThemeColor = 'Option Background';
                             ZIndex = z+2;
                             Parent = objs.holder;
@@ -4965,8 +4826,8 @@ function library:init()
 
                         -- knob riding on the end of the fill (children follow the fill's tween for free)
                         objs.knob = utility:Draw('Square', {
-                            Size = newUDim2(0,4,1,6);
-                            Position = newUDim2(1,-2,0,-3);
+                            Size = newUDim2(0,6,1,8);
+                            Position = newUDim2(1,-3,0,-4);
                             ThemeColor = 'Option Text 1';
                             ZIndex = z+6;
                             NoHit = true;
@@ -5001,13 +4862,14 @@ function library:init()
                         objs.gradient = utility:Draw('Image', {
                             Size = newUDim2(1,0,1,0);
                             Data = library.images.gradientp90;
+                            Visible = false; -- flat look (gradient kept for scripts that want it back)
                             Transparency = .65;
                             ZIndex = z+4;
                             Parent = objs.background;
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(0,2,0,1);
+                            Position = newUDim2(0,4,0,4);
                             ThemeColor = 'Option Text 3';
                             Size = 13;
                             Font = 2;
@@ -5017,23 +4879,23 @@ function library:init()
                         })
 
                         objs.plusDetector = utility:Draw('Square', {
-                            Size = newUDim2(0,14,0,14);
-                            Position = newUDim2(1,-28,0,1);
+                            Size = newUDim2(0,16,0,16);
+                            Position = newUDim2(1,-34,0,3);
                             Transparency = 0;
                             ZIndex = z+5;
                             Parent = objs.holder;
                         })
 
                         objs.minusDetector = utility:Draw('Square', {
-                            Size = newUDim2(0,14,0,14);
-                            Position = newUDim2(1,-14,0,1);
+                            Size = newUDim2(0,16,0,16);
+                            Position = newUDim2(1,-18,0,3);
                             Transparency = 0;
                             ZIndex = z+5;
                             Parent = objs.holder;
                         })
 
                         objs.plusText = utility:Draw('Text', {
-                            Position = newUDim2(.5,0,0,-1);
+                            Position = newUDim2(.5,0,0,1);
                             ThemeColor = 'Option Text 3';
                             Text = '+';
                             Size = 13;
@@ -5045,7 +4907,7 @@ function library:init()
                         })
 
                         objs.minusText = utility:Draw('Text', {
-                            Position = newUDim2(.5,0,0,-1);
+                            Position = newUDim2(.5,0,0,1);
                             ThemeColor = 'Option Text 3';
                             Text = '-';
                             Size = 13;
@@ -5138,7 +5000,7 @@ function library:init()
 
                             -- the knob sits on the value end of the fill (the left end for negative values)
                             if self.objects.knob then
-                                self.objects.knob.Position = (self.min < 0 and newValue < 0) and newUDim2(0,-2,0,-3) or newUDim2(1,-2,0,-3);
+                                self.objects.knob.Position = (self.min < 0 and newValue < 0) and newUDim2(0,-3,0,-4) or newUDim2(1,-3,0,-4);
                             end
 
                             self.value = newValue;
@@ -5205,14 +5067,14 @@ function library:init()
                         local z = library.zindexOrder.window+25;
 
                         objs.holder = utility:Draw('Square', {
-                            Size = newUDim2(1,0,0,22);
+                            Size = newUDim2(1,0,0,30);
                             Transparency = 0;
                             ZIndex = z+4;
                             Parent = section.objects.optionholder;
                         })
 
                         objs.background = utility:Draw('Square', {
-                            Size = newUDim2(1,-4,0,14);
+                            Size = newUDim2(1,-4,0,22);
                             Position = newUDim2(0,2,0,4);
                             ThemeColor = 'Option Background';
                             ZIndex = z+2;
@@ -5238,13 +5100,14 @@ function library:init()
                         objs.gradient = utility:Draw('Image', {
                             Size = newUDim2(1,0,1,0);
                             Data = library.images.gradientp90;
+                            Visible = false; -- flat look (gradient kept for scripts that want it back)
                             Transparency = .65;
                             ZIndex = z+3;
                             Parent = objs.background;
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(.5,0,0,0);
+                            Position = newUDim2(.5,0,0,4);
                             ThemeColor = 'Option Text 3';
                             Size = 13;
                             Font = 2;
@@ -5373,13 +5236,14 @@ function library:init()
                             objs.gradient = utility:Draw('Image', {
                                 Size = newUDim2(1,0,1,0);
                                 Data = library.images.gradientp90;
+                                Visible = false; -- flat look (gradient kept for scripts that want it back)
                                 Transparency = .65;
                                 ZIndex = z+3;
                                 Parent = objs.background;
                             })
     
                             objs.text = utility:Draw('Text', {
-                                Position = newUDim2(.5,0,0,0);
+                                Position = newUDim2(.5,0,0,4);
                                 ThemeColor = 'Option Text 3';
                                 Size = 13;
                                 Font = 2;
@@ -5460,7 +5324,7 @@ function library:init()
                     function button:UpdateOptions() -- this so dumb XD
                         local buttons = 1 + #self.subbuttons;
                         local buttonSize = (1 / buttons) - .005;
-                        self.objects.background.Size = newUDim2(buttonSize,-4,0,14);
+                        self.objects.background.Size = newUDim2(buttonSize,-4,0,22);
                         for i,v in next, self.subbuttons do
                             v.objects.holder.Size = newUDim2(buttonSize,0,1,0);
                             v.objects.holder.Position = newUDim2(i * buttonSize + .01, 0, 0, 0)
@@ -5506,7 +5370,7 @@ function library:init()
                         local z = library.zindexOrder.window+25;
 
                         objs.holder = utility:Draw('Square', {
-                            Size = newUDim2(1,0,0,18);
+                            Size = newUDim2(1,0,0,24);
                             Transparency = 0;
                             ZIndex = z;
                             Parent = section.objects.optionholder;
@@ -5543,7 +5407,7 @@ function library:init()
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(.5,0,0,1);
+                            Position = newUDim2(.5,0,0,4);
                             ThemeColor = 'Option Text 2';
                             Size = 13;
                             Font = 2;
@@ -5610,15 +5474,15 @@ function library:init()
                         local z = library.zindexOrder.window+25;
 
                         objs.holder = utility:Draw('Square', {
-                            Size = newUDim2(1,0,0,19);
+                            Size = newUDim2(1,0,0,26);
                             Transparency = 0;
                             ZIndex = z+5;
                             Parent = section.objects.optionholder;
                         })
 
                         objs.background = utility:Draw('Square', {
-                            Size = newUDim2(0,15,0,8);
-                            Position = newUDim2(1,-16,0,5);
+                            Size = newUDim2(0,22,0,12);
+                            Position = newUDim2(1,-24,0,7);
                             ZIndex = z+3;
                             Parent = objs.holder;
                         })
@@ -5626,6 +5490,7 @@ function library:init()
                         objs.gradient = utility:Draw('Image', {
                             Size = newUDim2(1,0,1,0);
                             Data = library.images.gradientp45;
+                            Visible = false; -- flat look (gradient kept for scripts that want it back)
                             Transparency = .25;
                             ZIndex = z+4;
                             Parent = objs.background;
@@ -5648,7 +5513,7 @@ function library:init()
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(0,2,0,2);
+                            Position = newUDim2(0,4,0,6);
                             ThemeColor = color.risky and 'Risky Text Enabled' or 'Option Text 3';
                             Size = 13;
                             Font = 2;
@@ -5771,15 +5636,15 @@ function library:init()
                         local z = library.zindexOrder.window+25;
 
                         objs.holder = utility:Draw('Square', {
-                            Size = newUDim2(1,0,0,37);
+                            Size = newUDim2(1,0,0,46);
                             Transparency = 0;
                             ZIndex = z+4;
                             Parent = section.objects.optionholder;
                         })
 
                         objs.background = utility:Draw('Square', {
-                            Size = newUDim2(1,-4,0,15);
-                            Position = newUDim2(0,2,1,-17);
+                            Size = newUDim2(1,-4,0,22);
+                            Position = newUDim2(0,2,1,-24);
                             ThemeColor = 'Option Background';
                             ZIndex = z+2;
                             Parent = objs.holder;
@@ -5804,13 +5669,14 @@ function library:init()
                         objs.gradient = utility:Draw('Image', {
                             Size = newUDim2(1,0,1,0);
                             Data = library.images.gradientp90;
+                            Visible = false; -- flat look (gradient kept for scripts that want it back)
                             Transparency = .65;
                             ZIndex = z+4;
                             Parent = objs.background;
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(0,2,0,2);
+                            Position = newUDim2(0,4,0,3);
                             ThemeColor = box.risky and 'Risky Text Enabled' or 'Option Text 2';
                             Size = 13;
                             Font = 2;
@@ -5820,7 +5686,7 @@ function library:init()
                         })
 
                         objs.inputText = utility:Draw('Text', {
-                            Position = newUDim2(0,2,0,0);
+                            Position = newUDim2(0,5,0,4);
                             ThemeColor = 'Option Text 2';
                             Size = 13;
                             Font = 2;
@@ -6072,14 +5938,14 @@ function library:init()
                         local z = library.zindexOrder.window+25;
 
                         objs.holder = utility:Draw('Square', {
-                            Size = newUDim2(1,0,0,19);
+                            Size = newUDim2(1,0,0,26);
                             Transparency = 0;
                             ZIndex = z+5;
                             Parent = section.objects.optionholder;
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(0,2,0,2);
+                            Position = newUDim2(0,4,0,6);
                             ThemeColor = bind.risky and 'Risky Text' or 'Option Text 2';
                             Size = 13;
                             Font = 2;
@@ -6154,7 +6020,7 @@ function library:init()
                     function bind:SetKeyText(str)
                         str = tostring(str);
                         self.objects.keyText.Text = '['..str..']';
-                        self.objects.keyText.Position = newUDim2(1,-self.objects.keyText.TextBounds.X, 0, 2);
+                        self.objects.keyText.Position = newUDim2(1,-self.objects.keyText.TextBounds.X, 0, 6);
                     end
 
                     utility:Connection(inputservice.InputBegan, function(inp)
@@ -6254,15 +6120,15 @@ function library:init()
                         local z = library.zindexOrder.window+25;
 
                         objs.holder = utility:Draw('Square', {
-                            Size = newUDim2(1,0,0,40);
+                            Size = newUDim2(1,0,0,48);
                             Transparency = 0;
                             ZIndex = z+4;
                             Parent = section.objects.optionholder;
                         })
 
                         objs.background = utility:Draw('Square', {
-                            Size = newUDim2(1,-4,0,15);
-                            Position = newUDim2(0,2,1,-19);
+                            Size = newUDim2(1,-4,0,22);
+                            Position = newUDim2(0,2,1,-24);
                             ThemeColor = 'Option Background';
                             ZIndex = z+2;
                             Parent = objs.holder;
@@ -6287,13 +6153,14 @@ function library:init()
                         objs.gradient = utility:Draw('Image', {
                             Size = newUDim2(1,0,1,0);
                             Data = library.images.gradientp90;
+                            Visible = false; -- flat look (gradient kept for scripts that want it back)
                             Transparency = .65;
                             ZIndex = z+4;
                             Parent = objs.background;
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(0,2,0,2);
+                            Position = newUDim2(0,4,0,3);
                             ThemeColor = list.risky and 'Risky Text Enabled' or 'Option Text 2';
                             Size = 13;
                             Font = 2;
@@ -6303,7 +6170,7 @@ function library:init()
                         })
 
                         objs.inputText = utility:Draw('Text', {
-                            Position = newUDim2(0,4,0,0);
+                            Position = newUDim2(0,6,0,4);
                             ThemeColor = 'Option Text 2';
                             Text = 'none',
                             Size = 13;
@@ -6314,7 +6181,7 @@ function library:init()
                         })
 
                         objs.openText = utility:Draw('Text', {
-                            Position = newUDim2(1,-10,0,0);
+                            Position = newUDim2(1,-12,0,4);
                             ThemeColor = 'Option Text 3';
                             Text = '+';
                             Size = 13;
@@ -6459,7 +6326,7 @@ function library:init()
                         })
 
                         objs.text = utility:Draw('Text', {
-                            Position = newUDim2(0,2,0,2);
+                            Position = newUDim2(0,4,0,4);
                             ThemeColor = text.risky and 'Risky Text Enabled' or 'Option Text 2';
                             Size = 13;
                             Font = 2;
@@ -6474,7 +6341,7 @@ function library:init()
                         if typeof(str) == 'string' then
                             self.text = str;
                             self.objects.text.Text = str;
-                            self.objects.holder.Size = newUDim2(1,0,0,self.objects.text.TextBounds.Y + 6);
+                            self.objects.holder.Size = newUDim2(1,0,0,self.objects.text.TextBounds.Y + 8);
                             section:UpdateOptions();
                         end
                     end
@@ -6578,7 +6445,7 @@ function library:init()
             table.sort(self.tabs, function(a,b)
                 return a.order < b.order
             end)
-            local ROW, GAP = 26, 4;
+            local ROW, GAP = 30, 4;
             local pos = 0;
             for i,v in next, self.tabs do
                 local objs = v.objects;
@@ -7150,8 +7017,12 @@ function library:CreateSettingsTab(menu)
     end
     table.sort(themeKeys)
 
-    for _, i in ipairs(themeKeys) do
-        themeSection:AddColor({text = i, flag = i, color = library.theme[i], callback = function(c3)
+    -- colors split over both columns so the tab fits the window
+    local colorSection = themeTab:AddSection('Colors', 2);
+    local half = math.ceil(#themeKeys / 2)
+    for idx, i in ipairs(themeKeys) do
+        local target = idx <= half and themeSection or colorSection
+        target:AddColor({text = i, flag = i, color = library.theme[i], callback = function(c3)
             library.theme[i] = c3
             library:SetTheme(library.theme)
             if not setByPreset and not setByConfig then
@@ -7160,9 +7031,11 @@ function library:CreateSettingsTab(menu)
         end});
     end
 
-    -- // Lights: every setting of the strand around the window, saved with configs like any other option
+    -- // Lights: every setting of the garland, saved with configs like any other option
     local lights = library.lights
-    local lightsSection = themeTab:AddSection('Lights', 2);
+    local lightsTab = menu:AddTab('Lights', 995, library.IconPNG('1f384'));
+    local lightsSection = lightsTab:AddSection('Strand', 1);
+    local lookSection = lightsTab:AddSection('Look', 2);
 
     lightsSection:AddToggle({text = 'String Lights', flag = 'lights_enabled', state = lights.enabled, callback = function(bool)
         lights.enabled = bool
@@ -7176,38 +7049,29 @@ function library:CreateSettingsTab(menu)
     lightsSection:AddToggle({text = 'Reverse Direction', flag = 'lights_reverse', state = lights.reverse, callback = function(bool)
         lights.reverse = bool
     end})
-    lightsSection:AddSlider({text = 'Spacing', flag = 'lights_spacing', min = 18, max = 80, value = lights.spacing, increment = 1, suffix = 'px', callback = function(v)
-        lights.spacing = v
+    lookSection:AddSlider({text = 'Bulbs Per Drape', flag = 'lights_per_swag', min = 1, max = 6, value = lights.perSwag, increment = 1, callback = function(v)
+        lights.perSwag = v
     end})
-    lightsSection:AddSlider({text = 'Bulb Size', flag = 'lights_size', min = 1.5, max = 6, value = lights.bulbSize, increment = .5, callback = function(v)
-        lights.bulbSize = v
+    lookSection:AddSlider({text = 'Drape Width', flag = 'lights_swag', min = 40, max = 200, value = lights.swag, increment = 2, suffix = 'px', callback = function(v)
+        lights.swag = v
     end})
-    lightsSection:AddSlider({text = 'Glow', flag = 'lights_glow', min = 0, max = 2, value = lights.glow, increment = .1, callback = function(v)
-        lights.glow = v
-    end})
-    lightsSection:AddSlider({text = 'Twinkle', flag = 'lights_twinkle', min = 0, max = 1, value = lights.twinkle, increment = .05, callback = function(v)
-        lights.twinkle = v
-    end})
-    lightsSection:AddSlider({text = 'Droop', flag = 'lights_sag', min = 0, max = 12, value = lights.sag, increment = .5, suffix = 'px', callback = function(v)
+    lookSection:AddSlider({text = 'Droop', flag = 'lights_sag', min = 0, max = 12, value = lights.sag, increment = .5, suffix = 'px', callback = function(v)
         lights.sag = v
     end})
-    lightsSection:AddToggle({text = 'Bright Wave', flag = 'lights_chase', state = lights.chase, tooltip = 'Extra brightness wave rolling around the strand', callback = function(bool)
-        lights.chase = bool
+    lookSection:AddSlider({text = 'Bulb Size', flag = 'lights_size', min = 2, max = 5, value = lights.bulbSize, increment = .1, callback = function(v)
+        lights.bulbSize = v
     end})
-    lightsSection:AddSlider({text = 'Wave Speed', flag = 'lights_chase_speed', min = .05, max = 2, value = lights.chaseSpeed, increment = .05, suffix = 'x', callback = function(v)
-        lights.chaseSpeed = v
+    lookSection:AddSlider({text = 'Swing', flag = 'lights_sway', min = 0, max = 3, value = lights.sway, increment = .1, callback = function(v)
+        lights.sway = v
     end})
-    lightsSection:AddToggle({text = 'Wire', flag = 'lights_wire', state = lights.wire, callback = function(bool)
-        lights.wire = bool
+    lookSection:AddSlider({text = 'Glow', flag = 'lights_glow', min = 0, max = 2, value = lights.glow, increment = .1, callback = function(v)
+        lights.glow = v
     end})
-    lightsSection:AddToggle({text = 'Ambient Glow', flag = 'lights_ambient', state = lights.ambient, callback = function(bool)
-        lights.ambient = bool
+    lookSection:AddSlider({text = 'Twinkle', flag = 'lights_twinkle', min = 0, max = 1, value = lights.twinkle, increment = .05, callback = function(v)
+        lights.twinkle = v
     end})
     lightsSection:AddToggle({text = 'Shadow', flag = 'lights_shadow', state = lights.shadow, callback = function(bool)
         lights.shadow = bool
-    end})
-    lightsSection:AddSlider({text = 'Animation FPS', flag = 'lights_fps', min = 15, max = 144, value = lights.fps, increment = 1, tooltip = 'Lower = cheaper', callback = function(v)
-        lights.fps = v
     end})
 
     -- load the autoload config once everything (including the theme pickers) exists.
