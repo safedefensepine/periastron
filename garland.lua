@@ -4,12 +4,13 @@
     garland  -  a festive drawing ui library (built on the periastron core)
 
     what's different from periastron:
-      * a strand of glowing christmas lights runs around the window and travels along its edge
-        (bulbs glow, twinkle, and a bright "chase" wave rolls around the strand)
+      * a strand of glowing christmas lights wrapped around the window: the wire hugs the frame,
+        droops between hooks, and the bulbs hang off it. the colors switch one bulb along at a time,
+        so the strand looks like it's moving (classic chasing lights)
       * soft ambient glow behind the window that slowly shifts through the light colors
       * new window layout: title bar + vertical sidebar tabs + content panel
-      * new section cards (header strip with a little glowing bulb), switch-style toggles,
-        sliders with a knob, glowing notification bulbs, festive theme presets
+      * new section cards (header strip), switch-style toggles, sliders with a knob,
+        festive theme presets
 
     same api as periastron (library:init, NewWindow, AddTab, AddSection, AddToggle, ...),
     so existing scripts keep working. everything about the lights lives in library.lights
@@ -320,26 +321,26 @@ library.animations = {
 library.lights = {
     enabled = true;       -- master switch for the light strand
     palette = 'classic';  -- classic, tree, warm, frost, candy, theme, rainbow (see library.lightPalettes)
-    speed = 18;           -- pixels per second the strand travels around the window (negative = backwards, 0 = still)
-    spacing = 34;         -- pixels between bulbs
-    sag = 4;              -- how far the wire droops between two bulbs
-    margin = 6;           -- gap between the window edge and the strand
-    corner = 12;          -- radius the strand bends with around the corners
+    colorStep = .45;      -- seconds between the colors switching one bulb along (this is what makes it look like it moves, 0 = still)
+    reverse = false;      -- run the color chase the other way around the window
+    spacing = 30;         -- pixels between bulbs
+    sag = 4;              -- how far the wire droops between two hooks
+    margin = 3;           -- gap between the window edge and the wire (small = wrapped tight around the window)
+    corner = 10;          -- radius the strand bends with around the corners
     bulbSize = 3;         -- bulb radius in pixels
     glow = 1;             -- glow strength (0 = no glow, 2 = very bright)
-    twinkle = .3;         -- random flicker per bulb (0 - 1)
-    chase = true;         -- a bright wave rolls around the strand
-    chaseSpeed = .35;     -- laps per second of the chase wave
-    colorStep = 0;        -- seconds between the colors stepping one bulb along (0 = off)
+    twinkle = .15;        -- random flicker per bulb (0 - 1)
+    chase = false;        -- extra bright wave rolling around the strand on top of the color switching
+    chaseSpeed = .35;     -- laps per second of that wave
     wire = true;          -- draw the wire between the bulbs
     ambient = true;       -- soft glow behind the window that slowly shifts through the light colors
     shadow = true;        -- soft drop shadow under the window
     powerOn = .8;         -- seconds for the bulbs to switch on one after another when the menu opens (0 = instant)
-    fps = 60;             -- how often the animation updates (lower = cheaper)
+    fps = 30;             -- how often the colors update (lower = cheaper)
 }
 
 -- bulb colors, used in order around the strand.
--- 'theme' (shades of the accent color) and 'rainbow' (moving hue) are generated on the fly.
+-- 'theme' (shades of the accent color) and 'rainbow' (six hues) are generated on the fly.
 library.lightPalettes = {
     classic = {fromrgb(255,58,58), fromrgb(60,220,95), fromrgb(255,196,48), fromrgb(64,140,255), fromrgb(236,88,255)};
     tree    = {fromrgb(255,58,58), fromrgb(60,220,95), fromrgb(255,210,80)};
@@ -1721,30 +1722,8 @@ function library:init()
             Parent = objs.background;
         })
 
-        -- little glowing bulb in front of the message
-        objs.bulbGlow = utility:Draw('Circle', {
-            Position = newUDim2(0,13,.5,0);
-            Radius = 6.5;
-            NumSides = 16;
-            Filled = true;
-            Transparency = .25;
-            ThemeColor = accentColor == nil and 'Accent' or '';
-            ZIndex = z+3;
-            Parent = objs.background;
-        })
-
-        objs.bulb = utility:Draw('Circle', {
-            Position = newUDim2(0,13,.5,0);
-            Radius = 3;
-            NumSides = 12;
-            Filled = true;
-            ThemeColor = accentColor == nil and 'Accent' or '';
-            ZIndex = z+4;
-            Parent = objs.background;
-        })
-
         objs.text = utility:Draw('Text', {
-            Position = newUDim2(0,24,.5,-7);
+            Position = newUDim2(0,10,.5,-7);
             ThemeColor = 'Primary Text';
             Text = message;
             Outline = true;
@@ -1773,12 +1752,10 @@ function library:init()
         if accentColor then
             objs.accentBar.Color = accentColor;
             objs.progress.Color = accentColor;
-            objs.bulb.Color = accentColor;
-            objs.bulbGlow.Color = accentColor;
         end
 
         -- size the card to the text, then park it off-screen to the left
-        notification.width = math.max(objs.text.TextBounds.X + 36, notifSettings.minWidth)
+        notification.width = math.max(objs.text.TextBounds.X + 22, notifSettings.minWidth)
         objs.background.Size = newUDim2(0, notification.width, 0, height)
         objs.background.Position = newUDim2(0, -(notification.width + notifSettings.x + 10), 0, 0)
 
@@ -2417,30 +2394,8 @@ function library:init()
                 Parent = objs.titleBar;
             })
 
-            -- little bulb in front of the title (its color follows the light strand)
-            objs.titleBulbGlow = utility:Draw('Circle', {
-                Position = newUDim2(0,15,0,TITLE_H/2);
-                Radius = 7;
-                NumSides = 18;
-                Filled = true;
-                Transparency = .22;
-                Color = library.theme['Accent'] or fromrgb(255,60,60);
-                ZIndex = z+2;
-                Parent = objs.titleBar;
-            })
-
-            objs.titleBulb = utility:Draw('Circle', {
-                Position = newUDim2(0,15,0,TITLE_H/2);
-                Radius = 3.5;
-                NumSides = 14;
-                Filled = true;
-                Color = library.theme['Accent'] or fromrgb(255,60,60);
-                ZIndex = z+3;
-                Parent = objs.titleBar;
-            })
-
             objs.title = utility:Draw('Text', {
-                Position = newUDim2(0,28,0,8);
+                Position = newUDim2(0,12,0,8);
                 ThemeColor = 'Primary Text';
                 Text = window.title;
                 Font = 2;
@@ -2600,19 +2555,24 @@ function library:init()
         -------------------------
 
         ---- String lights ----
-        -- A strand of bulbs on a wire runs around the window on a rounded rectangle just outside the frame.
-        -- The whole strand travels along the edge (cfg.speed), each bulb glows, twinkles and gets brighter
-        -- when the chase wave rolls past it. The shadow and ambient glow are parented to the window
-        -- (so they move/fade with it); the bulbs are not parented and are positioned every frame instead,
-        -- so dragging the window never snaps them for a frame. Everything is NoHit / non-Square,
-        -- so the lights never block clicks. Wrapped in pcall so a Drawing quirk can't break the window.
+        -- A strand of bulbs wrapped around the window: the wire hugs the frame (rounded at the corners)
+        -- and droops a little between hooks, and a bulb hangs off the wire at every droop, tilted
+        -- alternately left/right and pulled down a bit by gravity, like a real string of lights.
+        -- The bulbs never move; the motion comes from the colors stepping one bulb along every
+        -- cfg.colorStep seconds (a classic chasing light string). Bulb positions are only recalculated
+        -- when the window moves/resizes or a layout setting changes; every tick only touches colors.
+        -- The shadow and ambient glow are parented to the window (they move/fade with it); the bulbs
+        -- are not parented and are placed directly, so dragging never snaps them for a frame.
+        -- Nothing here is a hit area, so the lights never block clicks. Wrapped in pcall so a Drawing
+        -- quirk can't break the window.
         local lightsOk, lightsErr = pcall(function()
             local cfg = library.lights
             local objs = window.objects
             local z = library.zindexOrder.window
             local frame = objs.frame
             local white, black = c3new(1, 1, 1), c3new(0, 0, 0)
-            local wireColor, capColor = fromrgb(28, 48, 34), fromrgb(44, 52, 46)
+            local wireColor, capColor = fromrgb(28, 48, 34), fromrgb(58, 66, 60)
+            local GRAVITY = newVector2(0, 1)
             local TAU = pi * 2
 
             local function setShown(drawing, shown)
@@ -2659,8 +2619,10 @@ function library:init()
                 b.glowInner = utility:Draw('Circle', {Filled = true, NumSides = 16, Radius = 6, Transparency = 0, Visible = false, ZIndex = z - 14})
                 b.cap = utility:Draw('Line', {Thickness = 3, Color = capColor, Transparency = 1, Visible = false, ZIndex = z - 12})
                 b.body = utility:Draw('Circle', {Filled = true, NumSides = 14, Radius = 3, Transparency = 1, Visible = false, ZIndex = z - 11})
+                -- pointed end of the bulb (teardrop / C9 shape)
+                b.tip = utility:Draw('Triangle', {Filled = true, Thickness = 1, Transparency = 1, Visible = false, ZIndex = z - 11})
                 b.shine = utility:Draw('Circle', {Filled = true, NumSides = 8, Radius = 1, Color = white, Transparency = 0, Visible = false, ZIndex = z - 10})
-                b.parts = {b.glowOuter, b.glowInner, b.cap, b.body, b.shine}
+                b.parts = {b.glowOuter, b.glowInner, b.cap, b.body, b.tip, b.shine}
                 return b
             end
 
@@ -2680,7 +2642,7 @@ function library:init()
             local segs, perim, radius = {}, 1, 0
 
             local function buildPath(pos, size)
-                local m = tonumber(cfg.margin) or 6
+                local m = tonumber(cfg.margin) or 3
                 local x0, y0 = pos.X - m, pos.Y - m
                 local w, h = size.X + m * 2, size.Y + m * 2
                 local r = clamp(tonumber(cfg.corner) or 0, 0, math.min(w, h) / 2)
@@ -2731,14 +2693,23 @@ function library:init()
                 return s.a, s.n
             end
 
-            -- // Colors
-            local function getPalette(now)
+            -- direction the wire droops at a point: away from the window, pulled down a little
+            local function droopDir(n)
+                return (n + GRAVITY * .4).Unit
+            end
+
+            -- // Colors (every palette is a list; 'theme' and 'rainbow' are built here)
+            local function getPalette()
                 local name = cfg.palette
                 if name == 'theme' then
                     local accent = library.theme['Accent'] or white
                     return {accent, accent:Lerp(white, .45), accent:Lerp(black, .25)}
                 elseif name == 'rainbow' then
-                    return nil -- generated per bulb
+                    local list = {}
+                    for i = 0, 5 do
+                        list[i + 1] = fromhsv(i / 6, .75, 1)
+                    end
+                    return list
                 end
                 local pal = library.lightPalettes[name] or library.lightPalettes.classic
                 if typeof(pal) ~= 'table' or #pal == 0 then
@@ -2748,9 +2719,6 @@ function library:init()
             end
 
             local function ambientColor(pal, now)
-                if pal == nil then
-                    return fromhsv((now * .05) % 1, .6, 1)
-                end
                 local t = now * .25
                 local i = floor(t) % #pal + 1
                 local f = t % 1
@@ -2763,13 +2731,88 @@ function library:init()
             local hidden = true
             local wasOpen, openedAt, closedAt = false, 0, -10
             local lastUpdate = 0
-            local lastPos, lastSize, lastPathKey = nil, nil, nil
+            local lastPos, lastSize = nil, nil
+            local layoutKey = nil   -- when this changes, bulb positions are recalculated
+            local count, wireCount = 0, 0
             local points = {}
 
             local function hideStrand()
                 for _, b in ipairs(bulbs) do showBulb(b, false) end
                 for _, w in ipairs(wires) do setShown(w, false) end
                 hidden = true
+                layoutKey = nil
+            end
+
+            -- places every bulb + wire segment (only runs when the layout actually changed)
+            local function layoutStrand(pos, size)
+                buildPath(pos, size)
+
+                count = clamp(floor(perim / math.max(tonumber(cfg.spacing) or 30, 8) + .5), 4, 400)
+                local spacing = perim / count
+                local wireOn = cfg.wire and true or false
+                wireCount = wireOn and count * 4 or 0
+
+                while #bulbs < count do table.insert(bulbs, newBulb()) end
+                while #wires < wireCount do table.insert(wires, newWire()) end
+                for i = count + 1, #bulbs do showBulb(bulbs[i], false) end
+                for i = wireCount + 1, #wires do setShown(wires[i], false) end
+
+                local r = math.max(tonumber(cfg.bulbSize) or 3, 1)
+                local sag = tonumber(cfg.sag) or 3
+                local capLen = r * .8 + 1
+
+                -- wire: from hook to hook, drooping most where the bulb hangs (4 lines per drape)
+                if wireOn then
+                    for k = 0, count - 1 do
+                        for q = 0, 3 do
+                            local u = q / 4
+                            local p, n = pathAt((k + u) * spacing)
+                            points[k * 4 + q + 1] = p + droopDir(n) * (sag * 4 * u * (1 - u))
+                        end
+                    end
+                    for i = 1, wireCount do
+                        local w = wires[i]
+                        setShown(w, true)
+                        w.Object.From = points[i]
+                        w.Object.To = points[i % wireCount + 1]
+                    end
+                end
+
+                for k = 1, count do
+                    local b = bulbs[k]
+                    showBulb(b, true)
+
+                    local p, n = pathAt((k - .5) * spacing)
+                    local base = p + droopDir(n) * sag            -- lowest point of the drape
+                    local side = newVector2(-n.Y, n.X)
+                    local tilt = (k % 2 == 0) and .45 or -.45      -- alternate left / right
+                    local dir = (n + GRAVITY * .55 + side * tilt).Unit
+                    local across = newVector2(-dir.Y, dir.X)
+
+                    local capEnd = base + dir * capLen
+                    local center = capEnd + dir * (r * .85)
+
+                    b.cap.Object.From = base
+                    b.cap.Object.To = capEnd
+                    b.cap.Object.Thickness = math.max(r * .9, 2)
+
+                    b.body.Object.Position = center
+                    b.body.Object.Radius = r
+
+                    local tip = b.tip.Object
+                    tip.PointA = center + across * (r * .92)
+                    tip.PointB = center - across * (r * .92)
+                    tip.PointC = center + dir * (r * 2.2)
+
+                    b.shine.Object.Position = center - across * (r * .35)
+                    b.shine.Object.Radius = math.max(r * .32, .8)
+
+                    local glowCenter = center + dir * (r * .55)
+                    b.glowInner.Object.Position = glowCenter
+                    b.glowInner.Object.Radius = r * 2.3
+                    b.glowOuter.Object.Position = glowCenter
+                    b.glowOuter.Object.Radius = r * 3.8
+                end
             end
 
             local function updateLights(now, frameData)
@@ -2791,10 +2834,9 @@ function library:init()
                     alpha = 1 - clamp((now - closedAt) / .18, 0, 1)
                 end
 
-                local pal = getPalette(now)
+                local pal = getPalette()
                 local amb = ambientColor(pal, now)
 
-                -- ambient glow + title bulb
                 local ambientOn = cfg.enabled and cfg.ambient
                 for _, ring in ipairs(glowRings) do
                     setShown(ring, ambientOn and true or false)
@@ -2802,9 +2844,6 @@ function library:init()
                         ring.Object.Color = amb
                     end
                 end
-                local titleColor = cfg.enabled and amb or (library.theme['Accent'] or white)
-                objs.titleBulb.Object.Color = titleColor
-                objs.titleBulbGlow.Object.Color = titleColor
 
                 local wantShadow = cfg.shadow and true or false
                 for _, layer in ipairs(shadowLayers) do
@@ -2817,87 +2856,51 @@ function library:init()
                 end
                 hidden = false
 
-                -- path + bulb count
-                local pathKey = tostring(pos)..tostring(size)..tostring(cfg.margin)..tostring(cfg.corner)
-                if pathKey ~= lastPathKey then
-                    lastPathKey = pathKey
-                    buildPath(pos, size)
+                local key = table.concat({tostring(pos), tostring(size), tostring(cfg.margin), tostring(cfg.corner),
+                    tostring(cfg.spacing), tostring(cfg.bulbSize), tostring(cfg.sag), tostring(cfg.wire)}, '|')
+                if key ~= layoutKey then
+                    layoutKey = key
+                    layoutStrand(pos, size)
                 end
 
-                local count = clamp(floor(perim / math.max(tonumber(cfg.spacing) or 34, 8) + .5), 4, 400)
-                local spacing = perim / count
-                local wireOn = cfg.wire and true or false
-                local wireCount = wireOn and count * 4 or 0
-
-                while #bulbs < count do table.insert(bulbs, newBulb()) end
-                while #wires < wireCount do table.insert(wires, newWire()) end
-                for i = count + 1, #bulbs do showBulb(bulbs[i], false) end
-                for i = wireCount + 1, #wires do setShown(wires[i], false) end
-
-                -- resize bulbs only when bulbSize changed (or the bulb is new)
-                local r = math.max(tonumber(cfg.bulbSize) or 3, 1)
-                for i = 1, count do
-                    local b = bulbs[i]
-                    if b.radius ~= r then
-                        b.radius = r
-                        b.body.Object.Radius = r
-                        b.glowInner.Object.Radius = r * 2.1
-                        b.glowOuter.Object.Radius = r * 3.6
-                        b.shine.Object.Radius = math.max(r * .32, .8)
-                        b.cap.Object.Thickness = math.max(r * .9, 2)
-                    end
+                -- // Color chase: every colorStep seconds each color moves one bulb along the strand
+                local stepTime = tonumber(cfg.colorStep) or 0
+                local direction = cfg.reverse and -1 or 1
+                local step, blend = 0, 1
+                if stepTime > 0 then
+                    local t = now / stepTime
+                    step = floor(t)
+                    -- quick crossfade at the start of each step, then the color holds
+                    blend = clamp((t - step) * stepTime / math.min(.12, stepTime * .5), 0, 1)
                 end
 
-                local sag = tonumber(cfg.sag) or 4
-                local shift = (now * (tonumber(cfg.speed) or 0)) % perim
                 local glow = math.max(tonumber(cfg.glow) or 1, 0)
                 local twinkle = clamp(tonumber(cfg.twinkle) or 0, 0, 1)
-                local chaseSpeed = tonumber(cfg.chaseSpeed) or .35
-                local step = (tonumber(cfg.colorStep) or 0) > 0 and floor(now / cfg.colorStep) or 0
                 local powerOn = tonumber(cfg.powerOn) or 0
-                local capLen = r * .9 + 1
+                local wave = cfg.chase
+                local waveSpeed = tonumber(cfg.chaseSpeed) or .35
+                local n = #pal
 
-                -- wire: a drooping scallop between every pair of bulbs (4 lines per scallop)
-                if wireOn then
-                    for k = 0, count - 1 do
-                        for q = 0, 3 do
-                            local u = q / 4
-                            local p, n = pathAt(shift + (k + u) * spacing)
-                            points[k * 4 + q + 1] = p + n * (sag * 4 * u * (1 - u))
-                        end
-                    end
+                if wireCount > 0 then
                     for i = 1, wireCount do
-                        local w = wires[i]
-                        setShown(w, true)
-                        local raw = w.Object
-                        raw.From = points[i]
-                        raw.To = points[i % wireCount + 1]
-                        raw.Transparency = .95 * alpha
+                        wires[i].Object.Transparency = .95 * alpha
                     end
                 end
 
                 for k = 1, count do
                     local b = bulbs[k]
-                    showBulb(b, true)
 
-                    local p, n = pathAt(shift + (k - .5) * spacing)
-                    local base = p + n * sag
-                    local capEnd = base + n * capLen
-                    local center = capEnd + n * (r * .8)
-
-                    -- color of this bulb
-                    local color
-                    if pal == nil then
-                        color = fromhsv(((k - 1) / count + now * .08) % 1, .7, 1)
-                    else
-                        color = pal[((k - 1 + step) % #pal) + 1]
+                    local cur = pal[((k - 1 - direction * step) % n) + 1]
+                    local color = cur
+                    if blend < 1 then
+                        local prev = pal[((k - 1 - direction * (step - 1)) % n) + 1]
+                        color = prev:Lerp(cur, blend)
                     end
 
-                    -- brightness: chase wave, twinkle dips + sparkles, power-on sequence
                     local bright = 1
-                    if cfg.chase then
-                        local wave = (math.cos(((k - 1) / count - now * chaseSpeed) * TAU * 2) + 1) / 2
-                        bright = .45 + .55 * wave * wave * wave
+                    if wave then
+                        local w = (math.cos(((k - 1) / count - now * waveSpeed * direction) * TAU * 2) + 1) / 2
+                        bright = .55 + .45 * w * w * w
                     end
                     local sparkle = 0
                     if twinkle > 0 then
@@ -2911,33 +2914,24 @@ function library:init()
                         bright *= clamp((now - onAt) / .12, 0, 1)
                     end
 
-                    local dim = color:Lerp(black, .72)
-                    local bodyColor = dim:Lerp(color, bright)
+                    local bodyColor = color:Lerp(black, .72):Lerp(color, bright)
                     if sparkle > 0 then
                         bodyColor = bodyColor:Lerp(white, sparkle * .7)
                     end
 
-                    local cap, body, shine = b.cap.Object, b.body.Object, b.shine.Object
-                    local gi, go = b.glowInner.Object, b.glowOuter.Object
+                    b.cap.Object.Transparency = alpha
 
-                    cap.From = base
-                    cap.To = capEnd
-                    cap.Transparency = alpha
+                    b.body.Object.Color = bodyColor
+                    b.body.Object.Transparency = alpha
+                    b.tip.Object.Color = bodyColor
+                    b.tip.Object.Transparency = alpha
 
-                    body.Position = center
-                    body.Color = bodyColor
-                    body.Transparency = alpha
+                    b.shine.Object.Transparency = alpha * .55 * bright
 
-                    shine.Position = center + newVector2(-r * .35, -r * .35)
-                    shine.Transparency = alpha * .6 * bright
-
-                    gi.Position = center
-                    gi.Color = color
-                    gi.Transparency = clamp(.3 * glow * bright * alpha, 0, 1)
-
-                    go.Position = center
-                    go.Color = color
-                    go.Transparency = clamp((.1 + .08 * sparkle) * glow * bright * alpha, 0, 1)
+                    b.glowInner.Object.Color = color
+                    b.glowInner.Object.Transparency = clamp(.3 * glow * bright * alpha, 0, 1)
+                    b.glowOuter.Object.Color = color
+                    b.glowOuter.Object.Transparency = clamp((.1 + .08 * sparkle) * glow * bright * alpha, 0, 1)
                 end
             end
 
@@ -2955,7 +2949,7 @@ function library:init()
                     return
                 end
 
-                local interval = 1 / math.max(tonumber(cfg.fps) or 60, 1)
+                local interval = 1 / math.max(tonumber(cfg.fps) or 30, 1)
                 if not moved and not stateChanged and now - lastUpdate < interval then
                     return
                 end
@@ -3784,37 +3778,15 @@ function library:init()
                     Parent = objs.background;
                 })
 
-                -- icon to the left of the tab name.
-                -- string starting with the PNG magic bytes -> real image icon;
-                -- a number -> a little accent bulb with that many sides.
+                -- optional image icon to the left of the tab name
+                -- (a string starting with the PNG magic bytes, e.g. library.IconPNG('1f384')).
+                -- anything else = no icon, just the name.
                 if type(tab.icon) == 'string' and tab.icon:sub(1, 4) == '\137PNG' then
                     objs.icon = utility:Draw('Image', {
                         Size = newUDim2(0, 13, 0, 13);
                         Data = tab.icon;
                         ZIndex = z+1;
                         Position = newUDim2(0, 10, .5, -6);
-                        Parent = objs.background;
-                    })
-                else
-                    local sides = (type(tab.icon) == 'number' and math.clamp(math.floor(tab.icon), 3, 60)) or 12
-                    objs.iconGlow = utility:Draw('Circle', {
-                        NumSides = 16;
-                        Radius = 6.5;
-                        Filled = true;
-                        Transparency = .18;
-                        ThemeColor = 'Accent';
-                        ZIndex = z+1;
-                        Position = newUDim2(0, 16, .5, 0);
-                        Parent = objs.background;
-                    })
-                    objs.icon = utility:Draw('Circle', {
-                        NumSides = sides;
-                        Radius = 3.5;
-                        Filled = true;
-                        Thickness = 1;
-                        ThemeColor = 'Accent';
-                        ZIndex = z+2;
-                        Position = newUDim2(0, 16, .5, 0);
                         Parent = objs.background;
                     })
                 end
@@ -3853,7 +3825,7 @@ function library:init()
                 table.insert(self.sections, section);
 
                 --- Create Objects ---
-                -- a card: header strip (little glowing bulb + title) over the option list
+                -- a card: header strip with the title over the option list
                 local HEADER_H = 22
                 do
                     local objs = section.objects;
@@ -3897,29 +3869,8 @@ function library:init()
                         Parent = objs.header;
                     })
 
-                    objs.bulbGlow = utility:Draw('Circle', {
-                        Position = newUDim2(0,11,.5,0);
-                        Radius = 6;
-                        NumSides = 16;
-                        Filled = true;
-                        Transparency = .2;
-                        ThemeColor = 'Accent';
-                        ZIndex = z+2;
-                        Parent = objs.header;
-                    })
-
-                    objs.bulb = utility:Draw('Circle', {
-                        Position = newUDim2(0,11,.5,0);
-                        Radius = 2.8;
-                        NumSides = 12;
-                        Filled = true;
-                        ThemeColor = 'Accent';
-                        ZIndex = z+3;
-                        Parent = objs.header;
-                    })
-
                     objs.textlabel = utility:Draw('Text', {
-                        Position = newUDim2(0,22,0,4);
+                        Position = newUDim2(0,8,0,4);
                         ThemeColor = 'Primary Text';
                         Size = 13;
                         Font = 2;
@@ -7219,8 +7170,11 @@ function library:CreateSettingsTab(menu)
     lightsSection:AddList({text = 'Colors', flag = 'lights_palette', values = library.lightPaletteNames, callback = function(name)
         lights.palette = name
     end}):Select(lights.palette, true)
-    lightsSection:AddSlider({text = 'Speed', flag = 'lights_speed', min = -120, max = 120, value = lights.speed, increment = 1, suffix = 'px/s', callback = function(v)
-        lights.speed = v
+    lightsSection:AddSlider({text = 'Color Switch', flag = 'lights_color_step', min = 0, max = 2, value = lights.colorStep, increment = .05, suffix = 's', tooltip = 'Seconds between the colors moving one bulb along (0 = still)', callback = function(v)
+        lights.colorStep = v
+    end})
+    lightsSection:AddToggle({text = 'Reverse Direction', flag = 'lights_reverse', state = lights.reverse, callback = function(bool)
+        lights.reverse = bool
     end})
     lightsSection:AddSlider({text = 'Spacing', flag = 'lights_spacing', min = 18, max = 80, value = lights.spacing, increment = 1, suffix = 'px', callback = function(v)
         lights.spacing = v
@@ -7237,14 +7191,11 @@ function library:CreateSettingsTab(menu)
     lightsSection:AddSlider({text = 'Droop', flag = 'lights_sag', min = 0, max = 12, value = lights.sag, increment = .5, suffix = 'px', callback = function(v)
         lights.sag = v
     end})
-    lightsSection:AddToggle({text = 'Chase Wave', flag = 'lights_chase', state = lights.chase, callback = function(bool)
+    lightsSection:AddToggle({text = 'Bright Wave', flag = 'lights_chase', state = lights.chase, tooltip = 'Extra brightness wave rolling around the strand', callback = function(bool)
         lights.chase = bool
     end})
-    lightsSection:AddSlider({text = 'Chase Speed', flag = 'lights_chase_speed', min = .05, max = 2, value = lights.chaseSpeed, increment = .05, suffix = 'x', callback = function(v)
+    lightsSection:AddSlider({text = 'Wave Speed', flag = 'lights_chase_speed', min = .05, max = 2, value = lights.chaseSpeed, increment = .05, suffix = 'x', callback = function(v)
         lights.chaseSpeed = v
-    end})
-    lightsSection:AddSlider({text = 'Color Step', flag = 'lights_color_step', min = 0, max = 3, value = lights.colorStep, increment = .1, suffix = 's', tooltip = '0 = colors stay on their bulb', callback = function(v)
-        lights.colorStep = v
     end})
     lightsSection:AddToggle({text = 'Wire', flag = 'lights_wire', state = lights.wire, callback = function(bool)
         lights.wire = bool
