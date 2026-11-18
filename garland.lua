@@ -357,6 +357,70 @@ library.backdrop = {
     weight = .17;         -- stroke thickness, relative to the letter height
 }
 
+-- // Mascot: a picture at the bottom of the sidebar, loaded from a Roblox decal / image id
+library.mascot = {
+    enabled = true;
+    id = 1078702426;      -- any decal or image asset id (see library.mascotPresets)
+    size = 84;            -- pixels (square)
+}
+
+library.mascotPresets = {
+    {name = 'Cool Emoji',   id = 1078702426};
+    {name = 'Glasses Face', id = 963317680};
+    {name = 'Dog',          id = 6500411559};
+}
+
+-- Downloads a Roblox decal/image as PNG bytes for Drawing images (Drawing can't use rbxassetid://).
+-- Uses the public thumbnails api (no login needed), caches to <cheatname>/assets/rbx_<id>.png.
+-- Returns the bytes, or nil if it couldn't be loaded. Yields, so call it from a thread.
+do
+    local cache = {}
+    local function isImage(data)
+        return type(data) == 'string' and (data:sub(1, 4) == '\137PNG' or data:sub(1, 3) == '\255\216\255')
+    end
+    function library.RobloxImage(id, size)
+        id = tonumber(id)
+        if not id then return nil end
+        size = size or 420
+        local key = id .. '_' .. size
+        if cache[key] ~= nil then
+            return cache[key] or nil
+        end
+
+        local path = library.cheatname .. '/assets/rbx_' .. key .. '.png'
+        if isfile and readfile then
+            local ok, cached = pcall(function() return isfile(path) and readfile(path) end)
+            if ok and isImage(cached) then
+                cache[key] = cached
+                return cached
+            end
+        end
+
+        local data
+        pcall(function()
+            local api = ('https://thumbnails.roblox.com/v1/assets?assetIds=%d&returnPolicy=PlaceHolder&size=%dx%d&format=Png&isCircular=false'):format(id, size, size)
+            local info = http:JSONDecode(game:HttpGet(api))
+            local url = info and info.data and info.data[1] and info.data[1].imageUrl
+            if url then
+                data = game:HttpGet(url)
+            end
+        end)
+
+        if isImage(data) then
+            cache[key] = data
+            if writefile then
+                pcall(safeMakeFolder, library.cheatname)
+                pcall(safeMakeFolder, library.cheatname .. '/assets')
+                pcall(writefile, path, data)
+            end
+            return data
+        end
+        cache[key] = false
+        log('could not load roblox image ' .. tostring(id))
+        return nil
+    end
+end
+
 -- letter shapes for the backdrop, as strokes in "em" units: x to the right, y up from the baseline,
 -- 1 = lowercase letter height (descenders go below 0). each glyph has a width and a list of strokes;
 -- a stroke is either {'line', {x,y}, {x,y}, ...} or {'arc', cx, cy, rx, ry, fromDeg, toDeg}.
@@ -1014,6 +1078,17 @@ do
                 end
             end
 
+            -- lines placed with drawing:SetPoints are pinned to their parent, so they move in the
+            -- same update as the window (no frame of lag while dragging or opening)
+            if drawing.RelFrom ~= nil then
+                local a, b = parentPos + drawing.RelFrom, parentPos + drawing.RelTo
+                if a ~= drawing.AbsFrom or b ~= drawing.AbsTo then
+                    drawing.AbsFrom, drawing.AbsTo = a, b
+                    obj.From = a
+                    obj.To = b
+                end
+            end
+
             local visible = (parentVis and drawing.Visible) and true or false
             if visible ~= drawing.AbsVisible then
                 drawing.AbsVisible = visible
@@ -1021,6 +1096,12 @@ do
             end
 
             drawing:UpdateChildren()
+        end
+
+        -- Line only: endpoints as Vector2 offsets from the parent's top-left corner
+        function drawing:SetPoints(from, to)
+            drawing.RelFrom, drawing.RelTo = from, to
+            drawing:Update()
         end
 
         function drawing:UpdateChildren()
@@ -2437,8 +2518,13 @@ function library:init()
                 Parent = objs.sidebar;
             })
 
+            -- room for the mascot picture at the bottom of the sidebar
+            local mascotCfg = library.mascot
+            local mascotSize = tonumber(mascotCfg.size) or 84
+            local mascotRoom = mascotCfg.enabled and (mascotSize + 10) or 0
+
             objs.tabHolder = utility:Draw('Square', {
-                Size = newUDim2(1,-16,1,-44);
+                Size = newUDim2(1,-16,1,-44 - mascotRoom);
                 Position = newUDim2(0,8,0,12);
                 Transparency = 0;
                 ZIndex = z+2;
@@ -2464,6 +2550,40 @@ function library:init()
                 Outline = true;
                 Parent = objs.sidebar;
             })
+
+            -- // Mascot picture (downloaded in the background, shows up once it's loaded)
+            objs.mascot = utility:Draw('Image', {
+                Size = newUDim2(0,mascotSize,0,mascotSize);
+                Position = newUDim2(.5,-mascotSize/2,1,-(mascotSize + 30));
+                Visible = mascotCfg.enabled and true or false;
+                ZIndex = z+3;
+                Parent = objs.sidebar;
+            })
+
+            -- window:SetMascot(id) swaps the picture (any decal / image id), nil or false hides it
+            local mascotRequest = 0
+            function window:SetMascot(id)
+                mascotRequest += 1
+                local request = mascotRequest
+                window.mascotId = id
+                if not id then
+                    objs.mascot.Visible = false
+                    return
+                end
+                task.spawn(function()
+                    local bytes = library.RobloxImage(id)
+                    -- ignore it if another picture was asked for meanwhile, or the menu was unloaded
+                    if request ~= mascotRequest or objs.mascot.Object == nil then return end
+                    if bytes then
+                        objs.mascot.Data = bytes
+                        objs.mascot.Visible = true
+                    end
+                end)
+            end
+
+            if mascotCfg.enabled then
+                window:SetMascot(data.mascot or mascotCfg.id)
+            end
 
             -- // Content panel
             objs.groupBackground = utility:Draw('Square', {
@@ -2867,7 +2987,8 @@ function library:init()
         -- Drawing text can't rotate, so the letters are built from thick rounded strokes
         -- (library.backdropGlyphs) that are rotated by hand. They're drawn fully opaque in a color mixed
         -- from the panel background and the accent, so overlapping strokes never look darker.
-        -- Only recalculated when the window moves, the theme or a backdrop setting changes.
+        -- Every stroke is a child of the panel, so it's part of the window: it moves, opens and fades
+        -- exactly with it. Only re-laid out when the panel size, theme or a backdrop setting changes.
         local backdropOk, backdropErr = pcall(function()
             local cfg = library.backdrop
             local objs = window.objects
@@ -2878,8 +2999,6 @@ function library:init()
             local shapeKey, shape = nil, nil -- strokes of the current text in em units
             local lastKey = nil
             local broken = false
-            local shown = false
-            local wasOpen, openedAt, closedAt = false, 0, -10
 
             -- turns the text into line segments + joint points (em units), plus its size
             local function buildShape(text)
@@ -2928,32 +3047,20 @@ function library:init()
             local function hideAll()
                 for _, l in ipairs(lines) do setShown(l, false) end
                 for _, d in ipairs(dots) do setShown(d, false) end
-                shown = false
             end
 
-            local function update(now, panelData)
-                if window.open and not wasOpen then
-                    wasOpen, openedAt = true, now
-                elseif not window.open and wasOpen then
-                    wasOpen, closedAt = false, now
-                end
-                local alpha = window.open and clamp((now - openedAt) / .2, 0, 1) or (1 - clamp((now - closedAt) / .18, 0, 1))
-
-                if not cfg.enabled or alpha <= 0 or tostring(cfg.text or '') == '' then
-                    if shown then hideAll() end
-                    lastKey = nil
+            -- lays the word out in the panel's own coordinates. the strokes are children of the panel,
+            -- so the core layout moves them with the window in the same update (they can't lag or
+            -- drift), and the window's open/close fade handles their transparency.
+            local function layout(panelSize)
+                if not cfg.enabled or tostring(cfg.text or '') == '' then
+                    hideAll()
                     return
                 end
 
                 local base = library.theme['Group Background'] or c3new(0, 0, 0)
                 local tint = library.theme[cfg.color] or library.theme['Accent'] or c3new(1, 1, 1)
                 local color = base:Lerp(tint, clamp(tonumber(cfg.opacity) or .09, 0, 1))
-
-                local pos, size = panelData.AbsolutePosition, panelData.AbsoluteSize
-                local key = table.concat({tostring(pos), tostring(size), tostring(cfg.text), tostring(cfg.angle),
-                    tostring(cfg.size), tostring(cfg.weight), tostring(color), tostring(alpha)}, '|')
-                if key == lastKey then return end
-                lastKey = key
 
                 if shapeKey ~= cfg.text then
                     shapeKey = cfg.text
@@ -2966,62 +3073,62 @@ function library:init()
                 local w, h = shape.width, shape.top - shape.bottom
                 local fill = clamp(tonumber(cfg.size) or .8, .1, 1)
                 local scale = math.min(
-                    size.X * fill / (w * cos + h * sin),
-                    size.Y * fill / (w * sin + h * cos)
+                    panelSize.X * fill / math.max(w * math.abs(cos) + h * math.abs(sin), .01),
+                    panelSize.Y * fill / math.max(w * math.abs(sin) + h * math.abs(cos), .01)
                 )
                 local thick = math.max((tonumber(cfg.weight) or .17) * scale, 1)
-                local center = pos + size / 2
+                local center = panelSize / 2
                 local midX, midY = w / 2, (shape.top + shape.bottom) / 2
 
-                -- em point -> screen point (rotated so the word rises to the right)
-                local function toScreen(p)
+                -- em point -> offset inside the panel (rotated so the word rises to the right)
+                local function toPanel(p)
                     local vx, vy = (p[1] - midX) * scale, -(p[2] - midY) * scale
                     return center + newVector2(vx * cos + vy * sin, -vx * sin + vy * cos)
                 end
 
                 local segs, points = shape.segs, shape.points
                 while #lines < #segs do
-                    table.insert(lines, utility:Draw('Line', {Thickness = 1, Transparency = 1, Visible = false, ZIndex = z}))
+                    table.insert(lines, utility:Draw('Line', {Thickness = 1, Transparency = 1, Visible = false, ZIndex = z, Parent = panel}))
                 end
                 while #dots < #points do
-                    table.insert(dots, utility:Draw('Circle', {Filled = true, NumSides = 16, Radius = 1, Transparency = 1, Visible = false, ZIndex = z}))
+                    table.insert(dots, utility:Draw('Circle', {Filled = true, NumSides = 16, Radius = 1, Transparency = 1, Visible = false, ZIndex = z, Parent = panel}))
                 end
 
                 for i, l in ipairs(lines) do
                     local seg = segs[i]
-                    setShown(l, seg ~= nil)
                     if seg then
-                        local raw = l.Object
-                        raw.From = toScreen(seg[1])
-                        raw.To = toScreen(seg[2])
-                        raw.Thickness = thick
-                        raw.Color = color
-                        raw.Transparency = alpha
+                        l.Object.Thickness = thick
+                        l.Object.Color = color
+                        l:SetPoints(toPanel(seg[1]), toPanel(seg[2]))
                     end
+                    setShown(l, seg ~= nil)
                 end
                 -- round caps / joints so the strokes look smooth
                 for i, d in ipairs(dots) do
                     local p = points[i]
-                    setShown(d, p ~= nil)
                     if p then
-                        local raw = d.Object
-                        raw.Position = toScreen(p)
-                        raw.Radius = thick / 2
-                        raw.Color = color
-                        raw.Transparency = alpha
+                        d.Object.Radius = thick / 2
+                        d.Object.Color = color
+                        d.Position = toPanel(p)
                     end
+                    setShown(d, p ~= nil)
                 end
-                shown = true
             end
 
+            -- only re-layout when the panel's size, the theme or a backdrop setting changes
+            -- (moving the window needs nothing here, the panel carries the strokes along)
             utility:Connection(runservice.RenderStepped, function()
                 if broken then return end
                 local panelData = panel.Object and library.drawings[panel.Object]
                 if not panelData then return end -- unloaded
-                local now = os.clock()
-                -- nothing to do while closed and already hidden
-                if not window.open and not wasOpen and not shown then return end
-                local ok, err = pcall(update, now, panelData)
+                local base = library.theme['Group Background']
+                local tint = library.theme[cfg.color] or library.theme['Accent']
+                local key = table.concat({tostring(panelData.AbsoluteSize), tostring(cfg.enabled), tostring(cfg.text),
+                    tostring(cfg.angle), tostring(cfg.size), tostring(cfg.weight), tostring(cfg.opacity),
+                    tostring(base), tostring(tint)}, '|')
+                if key == lastKey then return end
+                lastKey = key
+                local ok, err = pcall(layout, panelData.AbsoluteSize)
                 if not ok then
                     broken = true
                     pcall(hideAll)
@@ -7301,6 +7408,24 @@ function library:CreateSettingsTab(menu)
     backdropSection:AddSlider({text = 'Size', flag = 'backdrop_size', min = .3, max = 1, value = backdrop.size, increment = .05, callback = function(v)
         backdrop.size = v
     end})
+
+    -- // Mascot picture at the bottom of the sidebar
+    local mascotNames, mascotIds, currentMascot = {}, {}, 'None'
+    for _, preset in ipairs(library.mascotPresets) do
+        table.insert(mascotNames, preset.name)
+        mascotIds[preset.name] = preset.id
+        if library.mascot.enabled and tonumber(preset.id) == tonumber(menu.mascotId) then
+            currentMascot = preset.name
+        end
+    end
+    table.insert(mascotNames, 'None')
+    backdropSection:AddList({text = 'Sidebar Picture', flag = 'mascot_choice', values = mascotNames, callback = function(name)
+        for _, w in ipairs(library.windows) do
+            if w.SetMascot then
+                w:SetMascot(mascotIds[name] or false)
+            end
+        end
+    end}):Select(currentMascot, true)
 
     -- load the autoload config once everything (including the theme pickers) exists.
     -- deferred a moment so options the script adds right after this call still get their values.
