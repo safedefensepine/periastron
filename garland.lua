@@ -2923,6 +2923,75 @@ function library:init()
                 utility:Connection(objs.groupBackground.MouseButton1Down, startPanDrag(objs.groupBackground))
             end
 
+            -- // Resize handle: a small grip in the bottom-right corner. drag it to resize the window.
+            local MIN_W, MIN_H = 420, 340
+            local resizing, resizeStart, resizeStartSize
+
+            -- three small diagonal lines (the classic resize grip)
+            objs.resizeGrip1 = utility:Draw('Line', {
+                Thickness = 1;
+                ThemeColor = 'Border 1';
+                ZIndex = z + 10;
+                NoHit = true;
+                Parent = objs.background;
+            })
+            objs.resizeGrip2 = utility:Draw('Line', {
+                Thickness = 1;
+                ThemeColor = 'Border 1';
+                ZIndex = z + 10;
+                NoHit = true;
+                Parent = objs.background;
+            })
+            objs.resizeGrip3 = utility:Draw('Line', {
+                Thickness = 1;
+                ThemeColor = 'Border 1';
+                ZIndex = z + 10;
+                NoHit = true;
+                Parent = objs.background;
+            })
+
+            -- invisible hit area over the corner
+            objs.resizeHit = utility:Draw('Square', {
+                Size = newUDim2(0, 16, 0, 16);
+                Position = newUDim2(1, -16, 1, -16);
+                Transparency = 0;
+                ZIndex = z + 9;
+                Parent = objs.background;
+            })
+
+            -- position the grip lines relative to the background size (called every frame while visible)
+            local function updateGripLines()
+                local bgSize = objs.background.Size
+                local bw = bgSize.X.Offset
+                local bh = bgSize.Y.Offset
+                -- three lines from bottom-right corner going up-left, spaced 4px apart
+                objs.resizeGrip1:SetPoints(newVector2(bw - 5, bh - 1), newVector2(bw - 1, bh - 5))
+                objs.resizeGrip2:SetPoints(newVector2(bw - 9, bh - 1), newVector2(bw - 1, bh - 9))
+                objs.resizeGrip3:SetPoints(newVector2(bw - 13, bh - 1), newVector2(bw - 1, bh - 13))
+            end
+            updateGripLines()
+
+            utility:Connection(objs.resizeHit.MouseButton1Down, function(pos)
+                resizing = true
+                resizeStart = newVector2(pos.X, pos.Y)
+                resizeStartSize = objs.background.Size
+            end)
+
+            utility:Connection(button1up, function()
+                resizing = false
+            end)
+
+            utility:Connection(mousemove, function(pos)
+                if resizing and window.open then
+                    local dx = pos.X - resizeStart.X
+                    local dy = pos.Y - resizeStart.Y
+                    local newW = math.max(resizeStartSize.X.Offset + dx, MIN_W)
+                    local newH = math.max(resizeStartSize.Y.Offset + dy, MIN_H)
+                    objs.background.Size = newUDim2(0, math.floor(newW), 0, math.floor(newH))
+                    updateGripLines()
+                end
+            end)
+
         end
         -------------------------
 
