@@ -7,7 +7,7 @@
         one bulb along at a time, so the strand looks like it's moving (classic chasing lights)
       * clean, flat look: title bar + vertical sidebar tabs + content panel, section cards,
         switch-style toggles, sliders with a knob, bigger controls, festive theme presets
-      * the dog picture at the bottom of the sidebar with the discord invite (click to copy)
+      * the christmas hat picture at the bottom of the sidebar with the discord invite (click to copy)
         under it - always on. (an optional tilted backdrop word exists too, off by default:
         library.backdrop.enabled = true)
       * centered title + subtitle, tab names, section titles and sidebar footer
@@ -393,9 +393,9 @@ library.backdrop = {
     weight = .17;         -- stroke thickness, relative to the letter height
 }
 
--- // Mascot: the dog picture at the bottom of the sidebar. always shown.
+-- // Mascot: the christmas hat picture at the bottom of the sidebar. always shown.
 library.mascot = {
-    id = 6500411559;      -- the dog (a Roblox decal id)
+    id = 82688244216737;  -- the christmas hat (a Roblox decal / image id)
     size = 84;            -- pixels (square)
 }
 
@@ -414,7 +414,7 @@ do
         id = tonumber(id)
         if not id then return nil end
         size = size or 420
-        local key = id .. '_' .. size
+        local key = ('%d_%d'):format(id, size) -- %d so long ids never turn into 8.2e+13
         if cache[key] ~= nil then
             return cache[key] or nil
         end
@@ -1639,7 +1639,7 @@ function library:init()
             button.Position = UDim2.fromOffset(12, 80)
             button.BackgroundColor3 = fromrgb(17, 27, 21)
             button.AutoButtonColor = false
-            button.Image = 'rbxthumb://type=Asset&id=' .. tostring(library.mascot.id) .. '&w=150&h=150'
+            button.Image = 'rbxthumb://type=Asset&id=' .. ('%d'):format(tonumber(library.mascot.id) or 0) .. '&w=150&h=150'
             button.Parent = toggleGui
             local corner = Instance.new('UICorner')
             corner.CornerRadius = UDim.new(0, 12)
@@ -2666,7 +2666,7 @@ function library:init()
                 size = newUDim2(0, fitW, 0, fitH)
                 position = newUDim2(0, floor(math.max((screen.X - fitW) / 2, 0)), 0, floor(math.max((screen.Y - fitH) / 2, 0)))
             end
-            -- short windows don't have room for the dog picture under the tabs
+            -- short windows don't have room for the hat picture under the tabs
             window.compact = size.Y.Offset < 520
 
             -- // Fit small screens: shrink the window if it's wider or taller than the viewport,
@@ -2786,7 +2786,7 @@ function library:init()
                 Parent = objs.sidebar;
             })
 
-            -- room for the dog picture at the bottom of the sidebar (always shown, except on short screens)
+            -- room for the hat picture at the bottom of the sidebar (always shown, except on short screens)
             local mascotCfg = library.mascot
             local mascotSize = tonumber(mascotCfg.size) or 84
             local mascotRoom = window.compact and 0 or (mascotSize + 10)
@@ -2842,7 +2842,7 @@ function library:init()
                 end
             end)
 
-            -- // Dog picture (downloaded in the background, shows up once it's loaded)
+            -- // Mascot picture (christmas hat) (downloaded in the background, shows up once it's loaded)
             objs.mascot = utility:Draw('Image', {
                 Size = newUDim2(0,mascotSize,0,mascotSize);
                 Position = newUDim2(.5,-mascotSize/2,1,-(mascotSize + 30));
@@ -7416,7 +7416,7 @@ function library:init()
             end)
 
             -- // keep the tabs inside the sidebar:
-            -- 1. if they don't fit, the dog picture makes room   2. rows shrink (down to 22px)
+            -- 1. if they don't fit, the hat picture makes room   2. rows shrink (down to 22px)
             -- 3. if they still don't fit, the list scrolls (wheel / finger drag) and rows outside are hidden
             local wobjs = self.objects
             local ROW, GAP = 30, 4;
@@ -7793,7 +7793,7 @@ end
 
 -- Adds the only two light settings players can change (Colors + Reverse Direction) to any section,
 -- e.g. a Festive tab:  library:AddLightControls(festiveTab:AddSection('Lights', 1))
--- the lights themselves, the dog picture and the discord invite are always on.
+-- the lights themselves, the hat picture and the discord invite are always on.
 -- options use the flags 'lights_palette' and 'lights_reverse', so configs save them.
 function library:AddLightControls(section)
     local lights = library.lights
