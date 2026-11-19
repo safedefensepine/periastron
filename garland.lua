@@ -1098,41 +1098,61 @@ do
                 parentSize, parentPos, parentVis = workspace.CurrentCamera.ViewportSize, newVector2(0, 0), true
             end
 
+            -- the cached rect is always kept current (layout code and hit testing read it)
+            local sizeChanged = false
             if hasSize then
                 local size = drawing.Size
                 local abs = typeof(size) == 'Vector2' and size or utility:UDim2ToVector2(size, parentSize)
-                if abs ~= drawing.AbsoluteSize or not drawing.SizeWritten then
+                if abs ~= drawing.AbsoluteSize then
                     drawing.AbsoluteSize = abs
-                    drawing.SizeWritten = true
-                    obj.Size = abs
+                    sizeChanged = true
                 end
             end
 
             if hasPosition then
                 local pos = drawing.Position
-                local abs = parentPos + (typeof(pos) == 'Vector2' and pos or utility:UDim2ToVector2(pos, parentSize))
-                if abs ~= drawing.AbsolutePosition or not drawing.PositionWritten then
-                    drawing.AbsolutePosition = abs
-                    drawing.PositionWritten = true
-                    obj.Position = abs
-                end
+                drawing.AbsolutePosition = parentPos + (typeof(pos) == 'Vector2' and pos or utility:UDim2ToVector2(pos, parentSize))
             end
 
             -- lines placed with drawing:SetPoints are pinned to their parent, so they move in the
             -- same update as the window (no frame of lag while dragging or opening)
             if drawing.RelFrom ~= nil then
-                local a, b = parentPos + drawing.RelFrom, parentPos + drawing.RelTo
-                if a ~= drawing.AbsFrom or b ~= drawing.AbsTo then
-                    drawing.AbsFrom, drawing.AbsTo = a, b
-                    obj.From = a
-                    obj.To = b
+                drawing.AbsFrom, drawing.AbsTo = parentPos + drawing.RelFrom, parentPos + drawing.RelTo
+            end
+
+            local wasVisible = drawing.AbsVisible
+            local visible = (parentVis and drawing.Visible) and true or false
+
+            -- writing to a Drawing object is the expensive part (dragging the window moves every
+            -- drawing in the menu, hidden tabs included). hidden drawings skip the write; it
+            -- happens the moment they're shown, before they turn visible, so nothing flashes.
+            if visible then
+                if hasSize and drawing.WrittenSize ~= drawing.AbsoluteSize then
+                    drawing.WrittenSize = drawing.AbsoluteSize
+                    obj.Size = drawing.AbsoluteSize
+                end
+                if hasPosition and drawing.WrittenPosition ~= drawing.AbsolutePosition then
+                    drawing.WrittenPosition = drawing.AbsolutePosition
+                    obj.Position = drawing.AbsolutePosition
+                end
+                if drawing.RelFrom ~= nil and (drawing.WrittenFrom ~= drawing.AbsFrom or drawing.WrittenTo ~= drawing.AbsTo) then
+                    drawing.WrittenFrom, drawing.WrittenTo = drawing.AbsFrom, drawing.AbsTo
+                    obj.From = drawing.AbsFrom
+                    obj.To = drawing.AbsTo
                 end
             end
 
-            local visible = (parentVis and drawing.Visible) and true or false
-            if visible ~= drawing.AbsVisible then
+            if visible ~= wasVisible then
                 drawing.AbsVisible = visible
                 obj.Visible = visible
+            end
+
+            -- a drawing that stays hidden and only moved (same size) doesn't need its children
+            -- re-placed now: they're hidden too, and they get re-placed the moment this one is
+            -- shown (becoming visible always updates the whole subtree). sizes stay current,
+            -- because a size change always goes down the tree.
+            if not visible and wasVisible == false and not sizeChanged then
+                return
             end
 
             drawing:UpdateChildren()
