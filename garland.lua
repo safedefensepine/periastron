@@ -1562,10 +1562,12 @@ function library:init()
     end
     screenGui.Enabled = false;
 
+    -- off until the menu opens (see setModal): a modal button that stays active is what keeps the mouse
+    -- unlocked in shift lock / first person, and some executors' gui containers ignore Enabled = false
     local modalButton = utility:Instance('TextButton', {
         Parent = screenGui,
-        Visible = true,
-        Modal = true,
+        Visible = false,
+        Modal = false,
         Text = '',
         Size = UDim2.new(0,0,0,0),
         BackgroundTransparency = 1;
@@ -1679,10 +1681,19 @@ function library:init()
         end
     end)
 
+    -- the mouse is only freed (modal) while the menu is open and you're not holding right click to look around.
+    -- closed = fully off, so shift lock / first person keep the mouse locked in the center.
+    local function setModal(free)
+        pcall(function()
+            modalButton.Modal = free
+            modalButton.Visible = free
+        end)
+    end
+
     utility:Connection(inputservice.InputBegan, function(input)
         if self.open and input.UserInputType == Enum.UserInputType.MouseButton2 and not library.mouseOverUI then
             lookingAround = true
-            modalButton.Modal = false
+            setModal(false)
             inputBlocker.Visible = false
         end
     end)
@@ -1690,7 +1701,7 @@ function library:init()
     utility:Connection(inputservice.InputEnded, function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton2 and lookingAround then
             lookingAround = false
-            modalButton.Modal = true
+            setModal(self.open)
             setMouseOverUI(utility:GetHoverObject() ~= nil)
         end
     end)
@@ -1896,11 +1907,12 @@ function library:init()
                 -- remember the game's own setting so closing the menu restores it
                 savedMouseIcon = inputservice.MouseIconEnabled
             end
+            setModal(not lookingAround)
             setMenuMouse(true)
             setMouseOverUI(utility:GetHoverObject() ~= nil)
         else
             lookingAround = false
-            modalButton.Modal = true
+            setModal(false) -- give the mouse back to shift lock / first person
             setMouseOverUI(false)
             setMenuMouse(false)
             -- closing the menu finishes whatever you were typing
@@ -2984,6 +2996,20 @@ function library:init()
             end
             updateGripLines()
 
+            -- after a size change the tabs (sidebar fit / scroll) and the sections (scroll range / clipping)
+            -- are laid out again, at most once per frame, so nothing pokes out of the window while resizing
+            local relayoutQueued = false
+            local function queueRelayout()
+                if relayoutQueued then return end
+                relayoutQueued = true
+                task.defer(function()
+                    relayoutQueued = false
+                    if objs.background.Object ~= nil and window.UpdateTabs then -- not unloaded
+                        window:UpdateTabs()
+                    end
+                end)
+            end
+
             utility:Connection(objs.resizeHit.MouseButton1Down, function(pos)
                 resizing = true
                 resizeStart = newVector2(pos.X, pos.Y)
@@ -2991,7 +3017,10 @@ function library:init()
             end)
 
             utility:Connection(button1up, function()
-                resizing = false
+                if resizing then
+                    resizing = false
+                    queueRelayout()
+                end
             end)
 
             utility:Connection(mousemove, function(pos)
@@ -3000,8 +3029,12 @@ function library:init()
                     local dy = pos.Y - resizeStart.Y
                     local newW = math.max(resizeStartSize.X.Offset + dx, MIN_W)
                     local newH = math.max(resizeStartSize.Y.Offset + dy, MIN_H)
-                    objs.background.Size = newUDim2(0, math.floor(newW), 0, math.floor(newH))
-                    updateGripLines()
+                    local newSize = newUDim2(0, math.floor(newW), 0, math.floor(newH))
+                    if newSize ~= objs.background.Size then
+                        objs.background.Size = newSize
+                        updateGripLines()
+                        queueRelayout()
+                    end
                 end
             end)
 
