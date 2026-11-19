@@ -4673,6 +4673,19 @@ function library:init()
                                 self.linkedBind:RefreshIndicator();
                             end
 
+                            -- keys that drive this toggle (toggle:AddBind) follow its state, however it changed
+                            for _, opt in ipairs(self.options) do
+                                if opt.class == 'bind' and not opt.linked and not opt.separate then
+                                    opt.state = bool
+                                    if opt.flag then
+                                        library.flags[opt.flag] = bool
+                                    end
+                                    if opt.indicatorValue then
+                                        opt.indicatorValue:SetEnabled(bool and opt.bind ~= 'none' and not opt.noindicator)
+                                    end
+                                end
+                            end
+
                         end
                     end
 
@@ -4872,6 +4885,11 @@ function library:init()
                             enabled = true;
                             binding = false;
                             linked = false; -- true = the key flips this toggle, 'none' = unbound (see toggle:AddKeybind)
+                            -- false (default) = the key drives the toggle it sits on: 'toggle' mode flips it,
+                            -- 'hold' mode turns it on while held. true = the old behaviour, where the key only
+                            -- flips its own flag / callback and leaves the toggle alone.
+                            separate = false;
+                            holding = false;
                             objects = {};
                         };
     
@@ -4888,7 +4906,8 @@ function library:init()
                             library.options[bind.flag] = bind;
                         end
 
-                        if bind.bind == 'none' and not bind.linked then
+                        -- an unbound separate key counts as "always on"; a key that drives the toggle just has no hotkey
+                        if bind.bind == 'none' and not bind.linked and bind.separate then
                             bind.state = true
                             if bind.flag then
                                 library.flags[bind.flag] = bind.state;
@@ -5019,10 +5038,18 @@ function library:init()
                                 end
                                 bind:SetBind(key)
                                 bind.binding = false
-                            elseif bind.linked then
-                                -- bound key flips the toggle it belongs to
+                            elseif bind.linked or not bind.separate then
+                                -- the bound key drives the toggle it sits on
                                 if bind.bind ~= 'none' and (inp.KeyCode == bind.bind or inp.UserInputType == bind.bind) then
-                                    toggle:SetState(not toggle.state);
+                                    if bind.mode == 'hold' and not bind.linked then
+                                        bind.holding = true
+                                        toggle:SetState(true);
+                                    else
+                                        toggle:SetState(not toggle.state);
+                                    end
+                                    if not bind.linked then
+                                        bind.callback(toggle.state)
+                                    end
                                 end
                             elseif not bind.binding and bind.bind == 'none' then
                                 bind.state = true
@@ -5057,6 +5084,12 @@ function library:init()
                         utility:Connection(inputservice.InputEnded, function(inp)
                             if bind.bind ~= 'none' then
                                 if inp.KeyCode == bind.bind or inp.UserInputType == bind.bind then
+                                    -- hold mode on a toggle: let go = toggle off
+                                    if bind.holding then
+                                        bind.holding = false
+                                        toggle:SetState(false);
+                                        bind.callback(false)
+                                    end
                                     if c then
                                         c:Disconnect();
                                         c = nil;
