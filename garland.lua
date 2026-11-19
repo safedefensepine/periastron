@@ -2638,6 +2638,17 @@ function library:init()
             local size = data.size or newUDim2(0, 700, 0, 640);
             local position = data.position or newUDim2(0, 250, 0, 150);
 
+            -- small screens (phones): shrink to fit and center. the content scrolls, so nothing is lost
+            local screen = workspace.CurrentCamera.ViewportSize
+            local fitW = math.min(size.X.Offset, math.max(screen.X - 16, 320))
+            local fitH = math.min(size.Y.Offset, math.max(screen.Y - 16, 240))
+            if size.X.Scale == 0 and size.Y.Scale == 0 and (fitW ~= size.X.Offset or fitH ~= size.Y.Offset) then
+                size = newUDim2(0, fitW, 0, fitH)
+                position = newUDim2(0, floor(math.max((screen.X - fitW) / 2, 0)), 0, floor(math.max((screen.Y - fitH) / 2, 0)))
+            end
+            -- short windows don't have room for the dog picture under the tabs
+            window.compact = size.Y.Offset < 520
+
             -- // Fit small screens: shrink the window if it's wider or taller than the viewport,
             -- then center it. phones in portrait can easily be narrower than 700px.
             pcall(function()
@@ -2755,10 +2766,10 @@ function library:init()
                 Parent = objs.sidebar;
             })
 
-            -- room for the dog picture at the bottom of the sidebar (always shown)
+            -- room for the dog picture at the bottom of the sidebar (always shown, except on short screens)
             local mascotCfg = library.mascot
             local mascotSize = tonumber(mascotCfg.size) or 84
-            local mascotRoom = mascotSize + 10
+            local mascotRoom = window.compact and 0 or (mascotSize + 10)
 
             objs.tabHolder = utility:Draw('Square', {
                 Size = newUDim2(1,-16,1,-44 - mascotRoom);
@@ -2814,6 +2825,7 @@ function library:init()
             objs.mascot = utility:Draw('Image', {
                 Size = newUDim2(0,mascotSize,0,mascotSize);
                 Position = newUDim2(.5,-mascotSize/2,1,-(mascotSize + 30));
+                Visible = not window.compact;
                 ZIndex = z+3;
                 Parent = objs.sidebar;
             })
@@ -2992,6 +3004,46 @@ function library:init()
                 end
             end)
 
+        end
+        -------------------------
+
+        ---- Touch scrolling ----
+        -- phones have no mouse wheel: dragging a finger on empty panel space (or a section's header /
+        -- background) scrolls the selected tab. taps on options still go to the options, they sit on top.
+        do
+            local scrollDrag = nil
+
+            function window:BeginTouchScroll(pos)
+                if not pointer.touch then return end
+                local tab = window.selectedTab
+                if not tab or not tab.maxScrollY or tab.maxScrollY <= 0 then return end
+                scrollDrag = {startY = pos.Y, startScroll = tab.scrollY or 0, tab = tab}
+            end
+
+            utility:Connection(mousemove, function(pos)
+                if scrollDrag then
+                    local tab = scrollDrag.tab
+                    if not window.open or window.selectedTab ~= tab then
+                        scrollDrag = nil
+                        return
+                    end
+                    local target = clamp(scrollDrag.startScroll - (pos.Y - scrollDrag.startY), 0, tab.maxScrollY or 0)
+                    if target ~= tab.scrollY then
+                        tab.scrollY = target
+                        tab:UpdateSections()
+                    end
+                end
+            end)
+
+            utility:Connection(button1up, function()
+                scrollDrag = nil
+            end)
+
+            for _, handle in ipairs({window.objects.groupBackground, window.objects.columnholder1, window.objects.columnholder2}) do
+                utility:Connection(handle.MouseButton1Down, function(pos)
+                    window:BeginTouchScroll(pos)
+                end)
+            end
         end
         -------------------------
 
@@ -4121,10 +4173,27 @@ function library:init()
             -- mouse wheel scrolling. UserInputService still fires when a GUI (like the menu's input blocker)
             -- has already processed the wheel, unlike ContextActionService, which never saw it.
             utility:Connection(inputservice.InputChanged, function(input)
-                if input.UserInputType == Enum.UserInputType.MouseWheel and mouseOverDropdown() then
+                if input.UserInputType == Enum.UserInputType.MouseWheel then
                     local z = input.Position.Z
                     if z ~= 0 then
-                        dropdown:Scroll(z > 0 and -1 or 1)
+                        if mouseOverDropdown() then
+                            dropdown:Scroll(z > 0 and -1 or 1)
+                        elseif window.open and window.selectedTab then
+                            -- scroll content area: check if mouse is over the group background
+                            local gbData = library.drawings[window.objects.groupBackground.Object]
+                            if gbData then
+                                local mp = getPointer()
+                                local gp, gs = gbData.AbsolutePosition, gbData.AbsoluteSize
+                                if mp.X >= gp.X and mp.X <= gp.X + gs.X and mp.Y >= gp.Y and mp.Y <= gp.Y + gs.Y then
+                                    local tab = window.selectedTab
+                                    if tab and tab.maxScrollY and tab.maxScrollY > 0 then
+                                        local step = 30
+                                        tab.scrollY = clamp((tab.scrollY or 0) + (z > 0 and -step or step), 0, tab.maxScrollY)
+                                        tab:UpdateSections()
+                                    end
+                                end
+                            end
+                        end
                     end
                 end
             end)
@@ -4135,6 +4204,17 @@ function library:init()
                 actionservice:BindActionAtPriority(wheelAction, function()
                     if mouseOverDropdown() then
                         return Enum.ContextActionResult.Sink
+                    end
+                    -- also sink wheel when scrolling the content area
+                    if window.open and window.selectedTab and window.selectedTab.maxScrollY and window.selectedTab.maxScrollY > 0 then
+                        local gbData = library.drawings[window.objects.groupBackground.Object]
+                        if gbData then
+                            local mp = getPointer()
+                            local gp, gs = gbData.AbsolutePosition, gbData.AbsoluteSize
+                            if mp.X >= gp.X and mp.X <= gp.X + gs.X and mp.Y >= gp.Y and mp.Y <= gp.Y + gs.Y then
+                                return Enum.ContextActionResult.Sink
+                            end
+                        end
                     end
                     return Enum.ContextActionResult.Pass
                 end, false, Enum.ContextActionPriority.High.Value + 100, Enum.UserInputType.MouseWheel)
@@ -4397,7 +4477,14 @@ function library:init()
                         ZIndex = z+1;
                         Parent = objs.background;
                     })
-                    
+
+                    -- touch: dragging on the section itself (not on an option) scrolls the tab
+                    for _, handle in ipairs({objs.background, objs.header, objs.optionholder}) do
+                        utility:Connection(handle.MouseButton1Down, function(pos)
+                            window:BeginTouchScroll(pos)
+                        end)
+                    end
+
                 end
                 ----------------------
 
@@ -7020,8 +7107,14 @@ function library:init()
                     return a.order < b.order
                 end)
 
+                -- scroll: each tab remembers its own scroll position
+                if not self.scrollY then self.scrollY = 0 end
+                local scrollY = self.scrollY
+
+                -- first pass: compute natural positions (no scroll) and total column heights
                 local last1,last2;
                 local padding = 10;
+                local naturalPositions = {}
                 for _,section in next, self.sections do
 
                     if section.objects.background.Visible ~= (section.enabled and tab.selected) then
@@ -7030,21 +7123,46 @@ function library:init()
                     end
                     
                     if section.enabled then
+                        -- natural (unscrolled) positions always start at 0 for the first section in a
+                        -- column; never read them back from Position, which already has the scroll applied
                         if section.side == 1 then
-                            if last1 then
-                                section.objects.background.Position = last1.objects.background.Position + newUDim2(0,0,0,last1.objects.background.Object.Size.Y + padding);
-                            end
+                            section._natPos = last1 and (last1._natPos + last1.objects.background.Object.Size.Y + padding) or 0
                             last1 = section;
                         elseif section.side == 2 then
-                            if last2 then
-                                section.objects.background.Position = last2.objects.background.Position + newUDim2(0,0,0,last2.objects.background.Object.Size.Y + padding);
-                            end
+                            section._natPos = last2 and (last2._natPos + last2.objects.background.Object.Size.Y + padding) or 0
                             last2 = section;
+                        end
+                    end
+                end
+
+                -- compute max scroll: tallest column minus the column's visible height
+                local colHeight1 = last1 and (last1._natPos + last1.objects.background.Object.Size.Y) or 0
+                local colHeight2 = last2 and (last2._natPos + last2.objects.background.Object.Size.Y) or 0
+                local tallest = math.max(colHeight1, colHeight2)
+                local visibleH = window.objects.columnholder1.Object.Size.Y
+                self.maxScrollY = math.max(tallest - visibleH, 0)
+                self.scrollY = clamp(self.scrollY, 0, self.maxScrollY)
+                scrollY = self.scrollY
+
+                -- second pass: apply scroll offset and visibility
+                for _,section in next, self.sections do
+                    if section.enabled and section._natPos then
+                        local scrolledY = section._natPos - scrollY
+                        local posX = section.objects.background.Position.X
+                        section.objects.background.Position = newUDim2(posX.Scale, posX.Offset, 0, scrolledY)
+
+                        -- Drawing can't clip, so a section scrolled even partly above the content area would
+                        -- draw over the title bar: it's hidden until it fits again. sections below the area are
+                        -- hidden too. only the selected tab's sections are ever shown.
+                        local inView = scrolledY >= 0 and scrolledY < visibleH
+                        local shown = tab.selected and inView
+                        if section.objects.background.Visible ~= shown then
+                            section.objects.background.Visible = shown
+                            section:UpdateOptions()
                         end
                     end
 
                     section:SetText(section.text)
-                    
                 end
             end
 
@@ -7059,6 +7177,10 @@ function library:init()
             function tab:Select()
                 local previous = window.selectedTab;
                 window.selectedTab = tab;
+                -- reset scroll to top when switching tabs
+                if previous ~= tab then
+                    self.scrollY = 0
+                end
                 if window.dropdown.selected then
                     window.dropdown:Close();
                 end
