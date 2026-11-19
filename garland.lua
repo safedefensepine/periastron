@@ -2770,6 +2770,7 @@ function library:init()
             local mascotCfg = library.mascot
             local mascotSize = tonumber(mascotCfg.size) or 84
             local mascotRoom = window.compact and 0 or (mascotSize + 10)
+            window.mascotRoom = mascotRoom -- UpdateTabs drops the picture if the tabs need the space
 
             objs.tabHolder = utility:Draw('Square', {
                 Size = newUDim2(1,-16,1,-44 - mascotRoom);
@@ -3035,13 +3036,41 @@ function library:init()
                 end
             end)
 
+            -- same for a tab list that's longer than the sidebar
+            local tabDrag = nil
+
+            function window:BeginTabScroll(pos)
+                if not pointer.touch or (window.maxTabScroll or 0) <= 0 then return end
+                tabDrag = {startY = pos.Y, startScroll = window.tabScroll or 0}
+            end
+
+            utility:Connection(mousemove, function(pos)
+                if tabDrag then
+                    if not window.open then
+                        tabDrag = nil
+                        return
+                    end
+                    local target = clamp(tabDrag.startScroll - (pos.Y - tabDrag.startY), 0, window.maxTabScroll or 0)
+                    if target ~= window.tabScroll then
+                        window.tabScroll = target
+                        window:UpdateTabs()
+                    end
+                end
+            end)
+
             utility:Connection(button1up, function()
                 scrollDrag = nil
+                tabDrag = nil
             end)
 
             for _, handle in ipairs({window.objects.groupBackground, window.objects.columnholder1, window.objects.columnholder2}) do
                 utility:Connection(handle.MouseButton1Down, function(pos)
                     window:BeginTouchScroll(pos)
+                end)
+            end
+            for _, handle in ipairs({window.objects.sidebar, window.objects.tabHolder}) do
+                utility:Connection(handle.MouseButton1Down, function(pos)
+                    window:BeginTabScroll(pos)
                 end)
             end
         end
@@ -4170,6 +4199,15 @@ function library:init()
                 return m.X >= p.X and m.Y >= p.Y and m.X <= p.X + s.X and m.Y <= p.Y + s.Y
             end
 
+            -- is the mouse over the tab sidebar?
+            local function mouseOverSidebar()
+                local data = library.drawings[window.objects.sidebar.Object]
+                if not data or not data.AbsVisible then return false end
+                local m = getPointer()
+                local p, s = data.AbsolutePosition, data.AbsoluteSize
+                return m.X >= p.X and m.Y >= p.Y and m.X <= p.X + s.X and m.Y <= p.Y + s.Y
+            end
+
             -- mouse wheel scrolling. UserInputService still fires when a GUI (like the menu's input blocker)
             -- has already processed the wheel, unlike ContextActionService, which never saw it.
             utility:Connection(inputservice.InputChanged, function(input)
@@ -4178,6 +4216,10 @@ function library:init()
                     if z ~= 0 then
                         if mouseOverDropdown() then
                             dropdown:Scroll(z > 0 and -1 or 1)
+                        elseif window.open and (window.maxTabScroll or 0) > 0 and mouseOverSidebar() then
+                            -- long tab list: scroll it
+                            window.tabScroll = clamp((window.tabScroll or 0) + (z > 0 and -30 or 30), 0, window.maxTabScroll)
+                            window:UpdateTabs()
                         elseif window.open and window.selectedTab then
                             -- scroll content area: check if mouse is over the group background
                             local gbData = library.drawings[window.objects.groupBackground.Object]
@@ -4203,6 +4245,9 @@ function library:init()
             pcall(function()
                 actionservice:BindActionAtPriority(wheelAction, function()
                     if mouseOverDropdown() then
+                        return Enum.ContextActionResult.Sink
+                    end
+                    if window.open and (window.maxTabScroll or 0) > 0 and mouseOverSidebar() then
                         return Enum.ContextActionResult.Sink
                     end
                     -- also sink wheel when scrolling the content area
@@ -4395,8 +4440,9 @@ function library:init()
                     end
                 end)
 
-                utility:Connection(objs.background.MouseButton1Down, function()
+                utility:Connection(objs.background.MouseButton1Down, function(pos)
                     tab:Select();
+                    window:BeginTabScroll(pos); -- on phones, dragging from a tab scrolls a long tab list
                 end)
 
             end
@@ -4421,10 +4467,20 @@ function library:init()
                     local objs = section.objects;
                     local z = library.zindexOrder.window+15;
 
+                    -- invisible anchor with the section's full size: everything is laid out from it
                     objs.background = utility:Draw('Square', {
-                        ThemeColor = 'Section Background';
+                        Transparency = 0;
                         ZIndex = z;
                         Parent = window.objects['columnholder'..(section.side)];
+                    })
+
+                    -- the visible card. when the section is scrolled partly out of the panel, the card is
+                    -- trimmed to the part that's inside (see section:ApplyClip), since Drawing can't clip
+                    objs.card = utility:Draw('Square', {
+                        Size = newUDim2(1,0,1,0);
+                        ThemeColor = 'Section Background';
+                        ZIndex = z;
+                        Parent = objs.background;
                     })
 
                     objs.innerBorder = utility:Draw('Square', {
@@ -4432,7 +4488,7 @@ function library:init()
                         Position = newUDim2(0,-1,0,-1);
                         ThemeColor = 'Border 1';
                         ZIndex = z-1;
-                        Parent = objs.background;
+                        Parent = objs.card;
                     })
 
                     objs.outerBorder = utility:Draw('Square', {
@@ -4479,7 +4535,7 @@ function library:init()
                     })
 
                     -- touch: dragging on the section itself (not on an option) scrolls the tab
-                    for _, handle in ipairs({objs.background, objs.header, objs.optionholder}) do
+                    for _, handle in ipairs({objs.background, objs.card, objs.header, objs.optionholder}) do
                         utility:Connection(handle.MouseButton1Down, function(pos)
                             window:BeginTouchScroll(pos)
                         end)
@@ -4500,7 +4556,7 @@ function library:init()
 
                     local ySize, padding = 0, 0;
                     for i,option in next, self.options do
-                        option.objects.holder.Visible = option.enabled
+                        option.objects.holder.Visible = option.enabled and not option.clipped
                         if option.enabled then
                             option.objects.holder.Position = newUDim2(0,0,0,ySize);
                             ySize += option.objects.holder.Object.Size.Y + padding;
@@ -4510,6 +4566,55 @@ function library:init()
                     -- header + top gap + options + bottom gap
                     self.objects.background.Size = newUDim2(1,0,0,HEADER_H + 6 + ySize + 6);
 
+                    -- the section's height changed: re-lay out (and re-clip) the tab once, at the end of this frame
+                    if not tab.relayoutQueued then
+                        tab.relayoutQueued = true
+                        task.defer(function()
+                            tab.relayoutQueued = false
+                            if section.objects.background.Object ~= nil then -- not unloaded
+                                tab:UpdateSections()
+                            end
+                        end)
+                    end
+                end
+
+                -- keeps the section inside the content panel: `top` is where the section starts inside the
+                -- column (after scrolling), `viewH` the column's visible height. the card is trimmed to the
+                -- visible part, the header and option rows that don't fully fit are hidden.
+                function section:ApplyClip(top, viewH)
+                    local objs = self.objects
+                    local h = objs.background.Object.Size.Y
+                    local clipTop = clamp(-top, 0, h)
+                    local clipBottom = clamp(viewH - top, 0, h)
+                    objs.card.Position = newUDim2(0, 0, 0, clipTop)
+                    objs.card.Size = newUDim2(1, 0, 0, math.max(clipBottom - clipTop, 0))
+
+                    local headerFits = top >= 0 and top + HEADER_H <= viewH
+                    if objs.header.Visible ~= headerFits then
+                        objs.header.Visible = headerFits
+                    end
+
+                    local base = top + HEADER_H + 6
+                    for _, option in ipairs(self.options) do
+                        local holder = option.objects.holder
+                        if holder and holder.Object then
+                            local y = base + holder.Position.Y.Offset
+                            local clipped = y < 0 or y + holder.Object.Size.Y > viewH
+                            if option.clipped ~= clipped then
+                                option.clipped = clipped
+                                holder.Visible = option.enabled and not clipped
+                                -- an open dropdown / color picker on a row that scrolled away closes
+                                if clipped then
+                                    if window.dropdown.selected == option then
+                                        window.dropdown:Close()
+                                    end
+                                    if option.open and option.SetOpen then
+                                        pcall(option.SetOpen, option, false)
+                                    end
+                                end
+                            end
+                        end
+                    end
                 end
 
                 function section:SetEnabled(bool)
@@ -7147,14 +7252,8 @@ function library:init()
                 -- first pass: compute natural positions (no scroll) and total column heights
                 local last1,last2;
                 local padding = 10;
-                local naturalPositions = {}
                 for _,section in next, self.sections do
-
-                    if section.objects.background.Visible ~= (section.enabled and tab.selected) then
-                        section.objects.background.Visible = section.enabled and tab.selected
-                        section:UpdateOptions();
-                    end
-                    
+                    -- (visibility is decided once, in the second pass, so it never flips back and forth)
                     if section.enabled then
                         -- natural (unscrolled) positions always start at 0 for the first section in a
                         -- column; never read them back from Position, which already has the scroll applied
@@ -7179,20 +7278,24 @@ function library:init()
 
                 -- second pass: apply scroll offset and visibility
                 for _,section in next, self.sections do
+                    local shown = false
+                    local scrolledY = 0
                     if section.enabled and section._natPos then
-                        local scrolledY = section._natPos - scrollY
+                        scrolledY = section._natPos - scrollY
+                        local sectionH = section.objects.background.Object.Size.Y
                         local posX = section.objects.background.Position.X
                         section.objects.background.Position = newUDim2(posX.Scale, posX.Offset, 0, scrolledY)
 
-                        -- Drawing can't clip, so a section scrolled even partly above the content area would
-                        -- draw over the title bar: it's hidden until it fits again. sections below the area are
-                        -- hidden too. only the selected tab's sections are ever shown.
-                        local inView = scrolledY >= 0 and scrolledY < visibleH
-                        local shown = tab.selected and inView
-                        if section.objects.background.Visible ~= shown then
-                            section.objects.background.Visible = shown
-                            section:UpdateOptions()
-                        end
+                        -- shown when any part of it is inside the content area (only on the selected tab);
+                        -- ApplyClip then trims it so nothing draws outside the panel
+                        local inView = scrolledY < visibleH and scrolledY + sectionH > 0
+                        shown = tab.selected and inView
+                    end
+                    if section.objects.background.Visible ~= shown then
+                        section.objects.background.Visible = shown
+                    end
+                    if shown then
+                        section:ApplyClip(scrolledY, visibleH)
                     end
 
                     section:SetText(section.text)
@@ -7256,8 +7359,34 @@ function library:init()
             table.sort(self.tabs, function(a,b)
                 return a.order < b.order
             end)
+
+            -- // keep the tabs inside the sidebar:
+            -- 1. if they don't fit, the dog picture makes room   2. rows shrink (down to 22px)
+            -- 3. if they still don't fit, the list scrolls (wheel / finger drag) and rows outside are hidden
+            local wobjs = self.objects
             local ROW, GAP = 30, 4;
-            local pos = 0;
+            local count = #self.tabs
+            local sidebarH = wobjs.sidebar.Object.Size.Y
+            local function needed(row) return count * (row + GAP) - GAP end
+            local room = self.mascotRoom or 0
+            if room > 0 and needed(ROW) > sidebarH - 44 - room then
+                room = 0
+            end
+            if wobjs.mascot and wobjs.mascot.Visible ~= (room > 0) then
+                wobjs.mascot.Visible = room > 0
+            end
+            local listH = math.max(sidebarH - 44 - room, ROW)
+            if wobjs.tabHolder.Size.Y.Offset ~= -44 - room then
+                wobjs.tabHolder.Size = newUDim2(1,-16,1,-44 - room)
+            end
+            if needed(ROW) > listH then
+                ROW = math.max(22, floor((listH + GAP) / math.max(count, 1)) - GAP)
+            end
+            self.maxTabScroll = math.max(needed(ROW) - listH, 0)
+            self.tabScroll = clamp(self.tabScroll or 0, 0, self.maxTabScroll)
+
+            local pos = -self.tabScroll;
+            local selectedShown = false
             for i,v in next, self.tabs do
                 local objs = v.objects;
                 v.selected = v == self.selectedTab;
@@ -7265,6 +7394,13 @@ function library:init()
                 objs.background.ThemeColorOffset = (not v.selected and objs.background.Hover) and 5 or 0;
                 objs.background.Size = newUDim2(1, 0, 0, ROW);
                 objs.background.Position = newUDim2(0, 0, 0, pos);
+                local fits = pos >= 0 and pos + ROW <= listH
+                if objs.background.Visible ~= fits then
+                    objs.background.Visible = fits
+                end
+                if v.selected and fits then
+                    selectedShown = true
+                end
 
                 -- name (and icon, if any) centered in the row
                 if objs.icon then
@@ -7304,6 +7440,11 @@ function library:init()
 
                 v:UpdateSections();
 
+            end
+
+            -- the accent bar only shows while the selected tab is in view
+            if self.objects.tabIndicator.Visible ~= selectedShown then
+                self.objects.tabIndicator.Visible = selectedShown
             end
         end
 
