@@ -5011,18 +5011,7 @@ function library:init()
                             library.options[bind.flag] = bind;
                         end
 
-                        -- an unbound separate key counts as "always on"; a key that drives the toggle just has no hotkey
-                        if bind.bind == 'none' and not bind.linked and bind.separate then
-                            bind.state = true
-                            if bind.flag then
-                                library.flags[bind.flag] = bind.state;
-                            end
-                            bind.callback(true)
-                            local display = bind.state; if bind.invertindicator then display = not bind.state; end
-                            bind.indicatorValue:SetEnabled(display and not bind.noindicator);
-                            bind.indicatorValue:SetKey((bind.text == nil or bind.text == '') and (bind.flag == nil and 'unknown' or bind.flag) or bind.text); -- this is so dumb
-                            bind.indicatorValue:SetValue('[Always]');
-                        end
+                        -- (an unbound key - 'none' - is simply off: it never turns anything on)
     
                         --- Create Objects ---
                         do
@@ -5080,34 +5069,34 @@ function library:init()
                             end
                             if self.bind == Enum.KeyCode.Backspace or self.bind == 'none' then
                                 self.bind = 'none';
-                                if not bind.linked then
-                                    bind.state = true
-                                    if bind.flag then
-                                        library.flags[bind.flag] = bind.state;
-                                    end
-                                    self.callback(true)
-                                    local display = bind.state; if bind.invertindicator then display = not bind.state; end
-                                    bind.indicatorValue:SetEnabled(display and not bind.noindicator);
-                                end
                             else
                                 keyName = getKeyName(self.bind)
                             end
-                            if self.bind ~= 'none' and not bind.linked then
-                                bind.state = false
-                                if bind.flag then
-                                    library.flags[bind.flag] = bind.state;
+                            if not bind.linked then
+                                if bind.separate then
+                                    -- a separate key starts off whenever it's set or cleared (unbound = never on)
+                                    local wasOn = bind.state
+                                    bind.state = false
+                                    if bind.flag then
+                                        library.flags[bind.flag] = false;
+                                    end
+                                    if wasOn then
+                                        self.callback(false)
+                                    end
+                                    bind.indicatorValue:SetEnabled((bind.invertindicator and self.bind ~= 'none') and not bind.noindicator);
+                                else
+                                    -- a key that drives its toggle just mirrors the toggle
+                                    bind.state = toggle.state == true
+                                    if bind.flag then
+                                        library.flags[bind.flag] = bind.state;
+                                    end
+                                    bind.indicatorValue:SetEnabled(bind.state and self.bind ~= 'none' and not bind.noindicator);
                                 end
-                                self.callback(false)
-                                local display = bind.state; if bind.invertindicator then display = not bind.state; end
-                                bind.indicatorValue:SetEnabled(display and not bind.noindicator);
                             end
                             self.keycallback(self.bind);
                             self:SetKeyText(keyName:upper());
                             self.indicatorValue:SetKey((self.text == nil or self.text == '') and (self.flag == nil and 'unknown' or self.flag) or self.text); -- this is so dumb
                             self.indicatorValue:SetValue('['..keyName:upper()..']');
-                            if self.bind == 'none' then
-                                self.indicatorValue:SetValue('[Always]');
-                            end
                             self.objects.keyText.ThemeColor = self.objects.holder.Hover and 'Accent' or 'Option Text 3';
                             self:RefreshIndicator();
                         end
@@ -5156,14 +5145,7 @@ function library:init()
                                         bind.callback(toggle.state)
                                     end
                                 end
-                            elseif not bind.binding and bind.bind == 'none' then
-                                bind.state = true
-                                if bind.flag then
-                                    library.flags[bind.flag] = bind.state
-                                end
-                                local display = bind.state; if bind.invertindicator then display = not bind.state; end
-                                bind.indicatorValue:SetEnabled(display and not bind.noindicator)
-                            elseif (inp.KeyCode == bind.bind or inp.UserInputType == bind.bind) and not bind.binding then
+                            elseif bind.bind ~= 'none' and (inp.KeyCode == bind.bind or inp.UserInputType == bind.bind) and not bind.binding then
                                 if bind.mode == 'toggle' then
                                     bind.state = not bind.state
                                     if bind.flag then
@@ -6888,6 +6870,15 @@ function library:init()
                         end
                         if self.bind == Enum.KeyCode.Backspace or self.bind == 'none' then
                             self.bind = 'none';
+                            -- clearing the key switches it off (an unbound key is never on)
+                            if self.state then
+                                self.state = false
+                                if self.flag then
+                                    library.flags[self.flag] = false;
+                                end
+                                self.callback(false);
+                            end
+                            self.indicatorValue:SetEnabled(false);
                         else
                             keyName = getKeyName(self.bind)
                         end
@@ -6914,12 +6905,8 @@ function library:init()
                             end
                             bind:SetBind(getInputKey(inp, bind.nomouse))
                             bind.binding = false
-                        elseif not bind.binding and bind.bind == 'none' then
-                            bind.state = true
-                            if bind.flag then
-                                library.flags[bind.flag] = bind.state
-                            end
-                        elseif (inp.KeyCode == bind.bind or inp.UserInputType == bind.bind) and not bind.binding then
+                        elseif bind.bind ~= 'none' and (inp.KeyCode == bind.bind or inp.UserInputType == bind.bind) and not bind.binding then
+                            -- (an unbound key - 'none' - never reacts to anything)
                             if bind.mode == 'toggle' then
                                 bind.state = not bind.state
                                 if bind.flag then
