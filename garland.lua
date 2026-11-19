@@ -1008,6 +1008,14 @@ do
         end
     end
 
+    -- on-screen size of a drawing (a proxy), from the rect cached in drawing:Update.
+    -- layout code uses this instead of reading .Object.Size back from the Drawing object,
+    -- which some executors return stale (e.g. still the old size right after a resize)
+    function utility:AbsSize(proxy)
+        local data = proxy and proxy.Object and library.drawings[proxy.Object]
+        return data and data.AbsoluteSize or newVector2(0, 0)
+    end
+
     -- is drawing data `data` the drawing `root` (a proxy) or somewhere inside it?
     function utility:IsInside(data, root)
         if data == nil or root == nil or root.Object == nil then return false end
@@ -3005,7 +3013,10 @@ function library:init()
                 task.defer(function()
                     relayoutQueued = false
                     if objs.background.Object ~= nil and window.UpdateTabs then -- not unloaded
-                        window:UpdateTabs()
+                        local ok, err = pcall(window.UpdateTabs, window)
+                        if not ok then
+                            log('re-layout after resize failed: '..tostring(err))
+                        end
                     end
                 end)
             end
@@ -3106,6 +3117,30 @@ function library:init()
                     window:BeginTabScroll(pos)
                 end)
             end
+        end
+        -------------------------
+
+        ---- Re-layout on size changes ----
+        -- whatever changes the window's size (the resize grip, a script, fitting a phone screen), the tabs
+        -- and sections are laid out again on the next frame, so nothing pokes out of the window.
+        do
+            local lastPanel, lastSidebar = nil, nil
+            utility:Connection(runservice.RenderStepped, function()
+                local objs = window.objects
+                if objs.groupBackground.Object == nil then return end -- unloaded
+                local panel = utility:AbsSize(objs.groupBackground)
+                local sidebar = utility:AbsSize(objs.sidebar)
+                if panel ~= lastPanel or sidebar ~= lastSidebar then
+                    local first = lastPanel == nil
+                    lastPanel, lastSidebar = panel, sidebar
+                    if not first and window.UpdateTabs then
+                        local ok, err = pcall(window.UpdateTabs, window)
+                        if not ok then
+                            log('re-layout after resize failed: '..tostring(err))
+                        end
+                    end
+                end
+            end)
         end
         -------------------------
 
@@ -4592,7 +4627,7 @@ function library:init()
                         option.objects.holder.Visible = option.enabled and not option.clipped
                         if option.enabled then
                             option.objects.holder.Position = newUDim2(0,0,0,ySize);
-                            ySize += option.objects.holder.Object.Size.Y + padding;
+                            ySize += utility:AbsSize(option.objects.holder).Y + padding;
                         end
                     end
 
@@ -4616,7 +4651,7 @@ function library:init()
                 -- visible part, the header and option rows that don't fully fit are hidden.
                 function section:ApplyClip(top, viewH)
                     local objs = self.objects
-                    local h = objs.background.Object.Size.Y
+                    local h = utility:AbsSize(objs.background).Y
                     local clipTop = clamp(-top, 0, h)
                     local clipBottom = clamp(viewH - top, 0, h)
                     objs.card.Position = newUDim2(0, 0, 0, clipTop)
@@ -4632,7 +4667,7 @@ function library:init()
                         local holder = option.objects.holder
                         if holder and holder.Object then
                             local y = base + holder.Position.Y.Offset
-                            local clipped = y < 0 or y + holder.Object.Size.Y > viewH
+                            local clipped = y < 0 or y + utility:AbsSize(holder).Y > viewH
                             if option.clipped ~= clipped then
                                 option.clipped = clipped
                                 holder.Visible = option.enabled and not clipped
@@ -4844,11 +4879,11 @@ function library:init()
                             option.objects.holder.Visible = option.enabled
                             if option.enabled then
                                 if option.class == 'color' or option.class == 'bind' then
-                                    option.objects.holder.Position = newUDim2(1,-option.objects.holder.Object.Size.X-x,0,0);
-                                    x = x + option.objects.holder.Object.Size.X;
+                                    option.objects.holder.Position = newUDim2(1,-utility:AbsSize(option.objects.holder).X-x,0,0);
+                                    x = x + utility:AbsSize(option.objects.holder).X;
                                 elseif option.class == 'slider' or option.class == 'list' then
-                                    option.objects.holder.Position = newUDim2(0,0,1,-option.objects.holder.Object.Size.Y-y);
-                                    y = y + option.objects.holder.Object.Size.Y;
+                                    option.objects.holder.Position = newUDim2(0,0,1,-utility:AbsSize(option.objects.holder).Y-y);
+                                    y = y + utility:AbsSize(option.objects.holder).Y;
                                 end
                             end
                         end
@@ -5553,11 +5588,11 @@ function library:init()
                                 local text = typeof(option) == 'table' and (#option == 0 and "none" or table.concat(option, ', ')) or tostring(option);
                                 local label = self.objects.inputText
                                 label.Text = text;
-                                if label.TextBounds.X > self.objects.background.Object.Size.X - 10 then
+                                if label.TextBounds.X > utility:AbsSize(self.objects.background).X - 10 then
                                     local split = text:split('');
                                     for i = 1,#split do
                                         label.Text = table.concat(split, '', 1, i)
-                                        if label.TextBounds.X > self.objects.background.Object.Size.X - 10 then
+                                        if label.TextBounds.X > utility:AbsSize(self.objects.background).X - 10 then
                                             label.Text = label.Text:sub(1,-6)..'...';
                                             break
                                         end
@@ -6625,7 +6660,7 @@ function library:init()
                             caret = math.clamp(caret, 1, #str + 1)
                             shown = str:sub(1, caret - 1)..'|'..str:sub(caret)
                         end
-                        local maxWidth = box.objects.background.Object.Size.X - 6
+                        local maxWidth = utility:AbsSize(box.objects.background).X - 6
                         label.Text = shown
                         if label.TextBounds.X > maxWidth then
                             -- too long: split into whole characters (so emoji / accents never get cut in half),
@@ -7140,11 +7175,11 @@ function library:init()
                             local text = typeof(option) == 'table' and (#option == 0 and "none" or table.concat(option, ', ')) or tostring(option);
                             local label = self.objects.inputText
                             label.Text = text;
-                            if label.TextBounds.X > self.objects.background.Object.Size.X - 10 then
+                            if label.TextBounds.X > utility:AbsSize(self.objects.background).X - 10 then
                                 local split = text:split('');
                                 for i = 1,#split do
                                     label.Text = table.concat(split, '', 1, i)
-                                    if label.TextBounds.X > self.objects.background.Object.Size.X - 10 then
+                                    if label.TextBounds.X > utility:AbsSize(self.objects.background).X - 10 then
                                         label.Text = label.Text:sub(1,-6)..'...';
                                         break
                                     end
@@ -7278,20 +7313,20 @@ function library:init()
                         -- natural (unscrolled) positions always start at 0 for the first section in a
                         -- column; never read them back from Position, which already has the scroll applied
                         if section.side == 1 then
-                            section._natPos = last1 and (last1._natPos + last1.objects.background.Object.Size.Y + padding) or 0
+                            section._natPos = last1 and (last1._natPos + utility:AbsSize(last1.objects.background).Y + padding) or 0
                             last1 = section;
                         elseif section.side == 2 then
-                            section._natPos = last2 and (last2._natPos + last2.objects.background.Object.Size.Y + padding) or 0
+                            section._natPos = last2 and (last2._natPos + utility:AbsSize(last2.objects.background).Y + padding) or 0
                             last2 = section;
                         end
                     end
                 end
 
                 -- compute max scroll: tallest column minus the column's visible height
-                local colHeight1 = last1 and (last1._natPos + last1.objects.background.Object.Size.Y) or 0
-                local colHeight2 = last2 and (last2._natPos + last2.objects.background.Object.Size.Y) or 0
+                local colHeight1 = last1 and (last1._natPos + utility:AbsSize(last1.objects.background).Y) or 0
+                local colHeight2 = last2 and (last2._natPos + utility:AbsSize(last2.objects.background).Y) or 0
                 local tallest = math.max(colHeight1, colHeight2)
-                local visibleH = window.objects.columnholder1.Object.Size.Y
+                local visibleH = utility:AbsSize(window.objects.columnholder1).Y
                 self.maxScrollY = math.max(tallest - visibleH, 0)
                 self.scrollY = clamp(self.scrollY, 0, self.maxScrollY)
                 scrollY = self.scrollY
@@ -7302,7 +7337,7 @@ function library:init()
                     local scrolledY = 0
                     if section.enabled and section._natPos then
                         scrolledY = section._natPos - scrollY
-                        local sectionH = section.objects.background.Object.Size.Y
+                        local sectionH = utility:AbsSize(section.objects.background).Y
                         local posX = section.objects.background.Position.X
                         section.objects.background.Position = newUDim2(posX.Scale, posX.Offset, 0, scrolledY)
 
@@ -7386,7 +7421,7 @@ function library:init()
             local wobjs = self.objects
             local ROW, GAP = 30, 4;
             local count = #self.tabs
-            local sidebarH = wobjs.sidebar.Object.Size.Y
+            local sidebarH = utility:AbsSize(wobjs.sidebar).Y
             local function needed(row) return count * (row + GAP) - GAP end
             local room = self.mascotRoom or 0
             if room > 0 and needed(ROW) > sidebarH - 44 - room then
